@@ -9,7 +9,6 @@ import uuid
 import hashlib
 import os
 from typing import Optional, Dict, Any
-from datetime import datetime
 
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -25,24 +24,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Telegram
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8609003431:AAGSSC1p-Hhr0IZ2iiB10qFU-jVf2B99QB4')
-
-# Account
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 USERNAME = os.getenv('USERNAME', '959680090540')
 PASSWORD = os.getenv('PASSWORD', 'Bbynnds8825')
-
-# Betting
 BET_AMOUNT = int(os.getenv('BET_AMOUNT', 10))
 GAME_TYPE_ID = int(os.getenv('GAME_TYPE_ID', 30))
 SELECT_TYPE = int(os.getenv('SELECT_TYPE', 13))
 INTERVAL_SECONDS = int(os.getenv('INTERVAL_SECONDS', 15))
-
-# API
 API_BASE_URL = os.getenv('API_BASE_URL', 'https://api.bigwinqaz.com/api/webapi')
 LANGUAGE = int(os.getenv('LANGUAGE', 7))
-
-# Logging
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
 logging.basicConfig(
@@ -56,8 +46,6 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 class SignatureGenerator:
-    """Generate API signature exactly like frontend"""
-    
     def __init__(self, language: int = 7):
         self.language = language
     
@@ -65,23 +53,17 @@ class SignatureGenerator:
         return uuid.uuid4().hex
     
     def generate_signature(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate signature with MD5 hash"""
-        # Remove existing signature and timestamp
         clean_data = {k: v for k, v in data.items() 
                      if k not in ['signature', 'timestamp']}
-        
-        # Add language and random
         clean_data['language'] = self.language
         clean_data['random'] = self.generate_random()
         
-        # Sort keys alphabetically
         sorted_data = {}
         for key in sorted(clean_data.keys()):
             value = clean_data[key]
             if value is not None and value != '':
                 sorted_data[key] = value
         
-        # JSON stringify and MD5 hash
         json_string = json.dumps(sorted_data, separators=(',', ':'))
         signature = hashlib.md5(json_string.encode()).hexdigest().upper()
         timestamp = int(time.time())
@@ -97,8 +79,6 @@ class SignatureGenerator:
 # ============================================================
 
 class APIClient:
-    """API client with auto-signature and rate limiting"""
-    
     BASE_URL = API_BASE_URL
     
     def __init__(self, token: str = "", language: int = 7):
@@ -149,7 +129,6 @@ class APIClient:
                 )
                 result = response.json()
                 
-                # Rate limit
                 if result.get('code') == 13:
                     logger.warning(f"Rate limited, waiting 5 seconds...")
                     time.sleep(5)
@@ -167,8 +146,6 @@ class APIClient:
         
         return {'code': -1, 'msg': 'Max retries exceeded'}
     
-    # ============ Login ============
-    
     def login(self, username: str, password: str) -> Dict[str, Any]:
         data = {
             'username': username,
@@ -185,49 +162,26 @@ class APIClient:
         }
         return self._post('Login', data)
     
-    # ============ Game Methods ============
-    
     def get_game_issue(self, type_id: int) -> Optional[str]:
-        """Get current issue number"""
         try:
             result = self._post('GetGameIssue', {'typeId': type_id})
-            logger.debug(f"GetGameIssue response: {json.dumps(result, indent=2)}")
             
             if result.get('code') != 0:
-                logger.warning(f"GetGameIssue failed: code={result.get('code')}, msg={result.get('msg')}")
                 return None
             
             data = result.get('data')
             
-            # Try different response formats
             if isinstance(data, dict):
-                for key in ['issueNo', 'issuenumber', 'issueNumber', 'issue']:
+                for key in ['issueNo', 'issuenumber', 'issueNumber']:
                     if key in data and data[key]:
-                        issue = str(data[key])
-                        logger.info(f"✅ Found issue from '{key}': {issue}")
-                        return issue
-                
-                # Check nested
-                for key in ['data', 'result', 'issueInfo']:
-                    if key in data and isinstance(data[key], dict):
-                        nested = data[key]
-                        for nkey in ['issueNo', 'issuenumber', 'issueNumber']:
-                            if nkey in nested and nested[nkey]:
-                                issue = str(nested[nkey])
-                                logger.info(f"✅ Found issue from '{key}.{nkey}': {issue}")
-                                return issue
+                        return str(data[key])
             
             elif isinstance(data, str):
                 return data
             
             elif isinstance(data, list) and len(data) > 0:
-                if isinstance(data[0], dict):
-                    for key in ['issueNo', 'issuenumber']:
-                        if key in data[0] and data[0][key]:
-                            return str(data[0][key])
                 return str(data[0])
             
-            logger.warning(f"Could not extract issue from: {data}")
             return None
             
         except Exception as e:
@@ -236,7 +190,6 @@ class APIClient:
     
     def place_bet(self, type_id: int, issue: str, select_type: int, 
                   amount: int, bet_count: int = 1, game_type: int = 2) -> Dict:
-        """Place a bet"""
         return self._post('GameBetting', {
             'typeId': type_id,
             'issuenumber': issue,
@@ -256,17 +209,12 @@ class APIClient:
             return 0.0
         except:
             return 0.0
-    
-    def get_user_info(self) -> Dict:
-        return self._post('GetUserInfo', {})
 
 # ============================================================
 # TELEGRAM BOT
 # ============================================================
 
 class AutoBetBot:
-    """Main Auto Bet Bot"""
-    
     def __init__(self, username: str = None, password: str = None):
         self.username = username or USERNAME
         self.password = password or PASSWORD
@@ -274,7 +222,6 @@ class AutoBetBot:
         self.is_running = False
         self.bet_task = None
         
-        # Betting config - use working type_id 30
         self.bet_config = {
             'type_id': GAME_TYPE_ID,
             'select_type': SELECT_TYPE,
@@ -293,7 +240,6 @@ class AutoBetBot:
         self.consecutive_failures = 0
     
     async def login(self) -> bool:
-        """Login to the platform"""
         try:
             result = self.api.login(self.username, self.password)
             if result.get('code') == 0:
@@ -309,7 +255,6 @@ class AutoBetBot:
             return False
     
     async def get_current_issue(self) -> Optional[str]:
-        """Get current issue number with retry"""
         type_id = self.bet_config['type_id']
         
         for attempt in range(5):
@@ -329,16 +274,13 @@ class AutoBetBot:
         return None
     
     async def place_bet(self) -> bool:
-        """Place a single bet"""
         type_id = self.bet_config['type_id']
         
-        # Get current issue
         issue = await self.get_current_issue()
         if not issue:
             logger.warning("❌ No issue number available after retries")
             return False
         
-        # Check if already bet on this issue
         if issue == self.current_issue:
             logger.info(f"⏳ Already bet on issue {issue}, waiting for next...")
             return False
@@ -352,8 +294,6 @@ class AutoBetBot:
                 bet_count=self.bet_config['bet_count'],
                 game_type=self.bet_config['game_type']
             )
-            
-            logger.info(f"Bet response: code={result.get('code')}")
             
             if result.get('code') == 0:
                 self.current_issue = issue
@@ -371,8 +311,6 @@ class AutoBetBot:
             return False
     
     async def run_auto_bet(self):
-        """Main auto-betting loop"""
-        # Login first
         if not await self.login():
             logger.error("❌ Login failed, cannot start auto bet")
             return
@@ -381,7 +319,6 @@ class AutoBetBot:
         interval = INTERVAL_SECONDS
         logger.info(f"🔄 Auto betting started - Interval: {interval}s")
         logger.info(f"💰 Bet Amount: {self.bet_config['amount']} USDT")
-        logger.info(f"🎮 Game Type: {self.bet_config['type_id']}")
         
         while self.is_running:
             try:
@@ -392,7 +329,6 @@ class AutoBetBot:
                 else:
                     self.consecutive_failures += 1
                 
-                # Dynamic wait time
                 wait_time = interval
                 if self.consecutive_failures > 5:
                     wait_time = 30
@@ -407,14 +343,12 @@ class AutoBetBot:
                 await asyncio.sleep(10)
     
     async def stop_auto_bet(self):
-        """Stop auto betting"""
         self.is_running = False
         if self.bet_task:
             self.bet_task.cancel()
         logger.info("⏹ Auto betting stopped")
     
     def get_stats(self) -> str:
-        """Get betting statistics"""
         total = self.stats['total_bets']
         wins = self.stats['wins']
         win_rate = (wins / max(total, 1)) * 100
@@ -430,7 +364,6 @@ class AutoBetBot:
         )
     
     def get_balance_text(self) -> str:
-        """Get balance text"""
         balance = self.api.get_balance()
         return f"💰 *Balance*: {balance} USDT"
 
@@ -441,7 +374,6 @@ class AutoBetBot:
 bot = AutoBetBot()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command handler"""
     keyboard = [
         [
             InlineKeyboardButton("▶️ Start Auto Bet", callback_data="start_bot"),
@@ -471,7 +403,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Button click handler"""
     query = update.callback_query
     await query.answer()
     
@@ -480,7 +411,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("ℹ️ Bot is already running!", parse_mode='Markdown')
             return
         
-        # Start in background
         bot.bet_task = asyncio.create_task(bot.run_auto_bet())
         await query.edit_message_text("🟢 *Auto bet started!*", parse_mode='Markdown')
     
@@ -507,7 +437,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ *Login refresh failed!*", parse_mode='Markdown')
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle custom commands"""
     text = update.message.text
     
     if text == "/stop":
@@ -532,47 +461,39 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(bot.get_balance_text(), parse_mode='Markdown')
 
 # ============================================================
-# MAIN
+# MAIN - FIXED FOR RENDER
 # ============================================================
 
 async def main():
-    """Main entry point"""
-    # Check configuration
     if not TELEGRAM_BOT_TOKEN:
-        print("❌ Error: TELEGRAM_BOT_TOKEN is not set in .env file")
+        print("❌ ERROR: TELEGRAM_BOT_TOKEN is not set!")
+        print("Please add TELEGRAM_BOT_TOKEN to your .env file")
         return
     
-    # Create application
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Add handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    
-    # Start bot
-    print("=" * 50)
-    print("🤖 Auto Bet Bot Started!")
-    print(f"📱 Telegram Bot: @{app.bot.username}")
-    print(f"🎮 Game Type: {GAME_TYPE_ID}")
-    print(f"💰 Bet Amount: {BET_AMOUNT} USDT")
-    print("=" * 50)
-    
-    # Start polling
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    
-    # Keep running
     try:
-        while True:
-            await asyncio.sleep(1)
-    except KeyboardInterrupt:
-        print("\n👋 Bot stopped by user")
-    finally:
-        await app.updater.stop()
-        await app.stop()
-        await app.shutdown()
+        print("=" * 50)
+        print("🤖 Auto Bet Bot Starting...")
+        print("=" * 50)
+        
+        # Create application
+        app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        
+        # Add handlers
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CallbackQueryHandler(button_handler))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+        
+        print(f"🎮 Game Type: {GAME_TYPE_ID}")
+        print(f"💰 Bet Amount: {BET_AMOUNT} USDT")
+        print("=" * 50)
+        
+        # Start polling (this will run forever)
+        print("🔄 Starting bot polling...")
+        await app.run_polling()
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return
 
 if __name__ == "__main__":
     try:
