@@ -6,7 +6,7 @@ import json
 import time
 import uuid
 import logging
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List
 
 import requests
 
@@ -44,9 +44,25 @@ class SignatureGenerator:
 
 
 class APIClient:
-    BASE_URL = "https://api.bigwinqaz.com/api/webapi"
+    SITE_CONFIGS = {
+        '777BIGWIN': {
+            'base_url': 'https://api.bigwinqaz.com/api/webapi',
+            'ar_origin': 'https://www.777bigwingame.app',
+            'authority': 'api.bigwinqaz.com',
+            'min_bet': 10,
+        },
+        '6LOTTERY': {
+            'base_url': 'https://6lotteryapi.com/api/webapi',
+            'ar_origin': 'https://www.6win566.com',
+            'authority': '6lotteryapi.com',
+            'min_bet': 100,
+        }
+    }
     
-    def __init__(self, token: str = "", language: int = 7):
+    def __init__(self, site: str = '777BIGWIN', token: str = "", language: int = 7):
+        self.site = site
+        self.site_config = self.SITE_CONFIGS.get(site, self.SITE_CONFIGS['777BIGWIN'])
+        self.base_url = self.site_config['base_url']
         self.token = token
         self.language = language
         self.sig_gen = SignatureGenerator(language)
@@ -56,18 +72,24 @@ class APIClient:
         self._setup_headers()
     
     def _setup_headers(self):
-        self.session.headers.update({
-            'authority': 'api.bigwinqaz.com',
+        config = self.site_config
+        headers = {
             'accept': 'application/json, text/plain, */*',
             'accept-language': 'en-US,en;q=0.9',
-            'ar-origin': 'https://www.777bigwingame.app',
             'cache-control': 'no-cache',
             'content-type': 'application/json;charset=UTF-8',
-            'origin': 'https://www.777bigwingame.app',
             'pragma': 'no-cache',
-            'referer': 'https://www.777bigwingame.app/',
             'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
-        })
+            'authority': config.get('authority', 'api.bigwinqaz.com'),
+            'ar-origin': config.get('ar_origin', 'https://www.777bigwingame.app'),
+            'ar-real-ip': '',
+            'origin': config.get('ar_origin', 'https://www.777bigwingame.app'),
+            'referer': config.get('ar_origin', 'https://www.777bigwingame.app/'),
+        }
+        self.session.headers.update(headers)
+    
+    def get_min_bet(self) -> int:
+        return self.site_config.get('min_bet', 10)
     
     def set_token(self, token: str):
         self.token = token
@@ -83,24 +105,20 @@ class APIClient:
     
     def _post(self, endpoint: str, data: Dict[str, Any], retry: int = 3) -> Dict[str, Any]:
         self._rate_limit()
-        
         for attempt in range(retry):
             try:
                 signed_data = self.sig_gen.generate_signature(data)
                 response = self.session.post(
-                    f"{self.BASE_URL}/{endpoint}",
+                    f"{self.base_url}/{endpoint}",
                     json=signed_data,
                     timeout=30
                 )
                 result = response.json()
-                
                 if result.get('code') == 13:
                     logger.warning(f"Rate limited, waiting 5 seconds...")
                     time.sleep(5)
                     continue
-                
                 return result
-                
             except requests.exceptions.Timeout:
                 logger.warning(f"Request timeout, retry {attempt+1}/{retry}")
                 time.sleep(2)
@@ -108,7 +126,6 @@ class APIClient:
                 logger.error(f"Request error: {e}")
                 if attempt == retry - 1:
                     raise
-        
         return {'code': -1, 'msg': 'Max retries exceeded'}
     
     def login(self, username: str, password: str) -> Dict[str, Any]:
@@ -130,25 +147,18 @@ class APIClient:
     def get_game_issue(self, type_id: int) -> Optional[str]:
         try:
             result = self._post('GetGameIssue', {'typeId': type_id})
-            
             if result.get('code') != 0:
                 return None
-            
             data = result.get('data')
-            
             if isinstance(data, dict):
                 for key in ['issueNo', 'issuenumber', 'issueNumber']:
                     if key in data and data[key]:
                         return str(data[key])
-            
             elif isinstance(data, str):
                 return data
-            
             elif isinstance(data, list) and len(data) > 0:
                 return str(data[0])
-            
             return None
-            
         except Exception as e:
             logger.error(f"GetGameIssue error: {e}")
             return None
@@ -160,7 +170,6 @@ class APIClient:
                 'pageSize': page_size,
                 'pageNo': page_no
             })
-            
             if result.get('code') == 0:
                 data = result.get('data', {})
                 if isinstance(data, dict):
@@ -168,7 +177,6 @@ class APIClient:
                 elif isinstance(data, list):
                     return data
             return []
-            
         except Exception as e:
             logger.error(f"GetNoaverageEmerdList error: {e}")
             return []
@@ -194,3 +202,6 @@ class APIClient:
             return 0.0
         except:
             return 0.0
+    
+    async def close(self):
+        self.session.close()
