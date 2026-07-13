@@ -57,7 +57,7 @@ SITE_CONFIGS = {
 }
 
 def get_signed_payload(payload: dict) -> dict:
-    """Frontend ၏ Signature တွက်ချက်မှု Logic အတိအကျ (A-Z Sort, Empty string filter)"""
+    """Frontend ၏ Signature တွက်ချက်မှု Logic အတိအကျ"""
     t = {k: v for k, v in payload.items() if k not in ['signature', 'timestamp']}
     
     if 'language' not in t:
@@ -173,64 +173,45 @@ def get_myanmar_time() -> datetime:
 # ==========================================================
 class AuthMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
-        user_tg_id = None
+        user_id = None
         text = ""
         
         if isinstance(event, types.Message):
-            user_tg_id = event.from_user.id
+            user_id = event.from_user.id
             text = event.text or ""
         elif isinstance(event, types.CallbackQuery):
-            user_tg_id = event.from_user.id
+            user_id = event.from_user.id
             
-        if user_tg_id:
-            if user_tg_id == OWNER_ID:
+        if user_id:
+            if user_id == OWNER_ID:
                 return await handler(event, data)
                 
-            # 🌟 Login Process နှင့် Commands များကို အမြဲခွင့်ပြုရန် (Bypass)
-            if isinstance(event, types.Message):
-                if text.startswith("/") or text.startswith("."):
-                    return await handler(event, data)
-                if text in [TEXT_LOGIN, "777BIGWIN", "6Lottery", "Back", "Cancel"]:
-                    return await handler(event, data)
-                if text.startswith("PSP-") and len(text) == 20:
-                    return await handler(event, data)
-                    
-            # 🌟 FSM State များ (Phone, Password ရိုက်နေစဉ်) ကို ခွင့်ပြုရန်
-            state = data.get("state")
-            if state:
-                current_state = await state.get_state()
-                if current_state in [
-                    LoginForm.select_site.state, 
-                    LoginForm.enter_phone.state, 
-                    LoginForm.enter_password.state
-                ]:
-                    return await handler(event, data)
+            whitelisted = await db.db["whitelist"].find_one({"uid": str(user_id)})
+            if whitelisted:
+                return await handler(event, data)
             
-            # 🛑 Login ဝင်ပြီးနောက် အခြားခလုတ်များ နှိပ်လာလျှင် စစ်ဆေးမည်
-            game_uid = None
-            if user_tg_id in active_sessions:
-                game_uid = active_sessions[user_tg_id].get("user_id")
+            if isinstance(event, types.Message) and text.startswith("PSP-") and len(text) == 20:
+                return await handler(event, data)
                 
+            expire_iso = await db.get_user_subscription(user_id)
             is_authorized = False
             
-            if game_uid and await db.db["whitelist"].find_one({"uid": str(game_uid)}):
-                is_authorized = True
-            elif await db.db["whitelist"].find_one({"uid": str(user_tg_id)}):
-                is_authorized = True
-            else:
-                expire_iso = await db.get_user_subscription(user_tg_id)
-                if expire_iso and get_myanmar_time() < datetime.fromisoformat(expire_iso):
+            if expire_iso:
+                expire_time = datetime.fromisoformat(expire_iso)
+                if get_myanmar_time() < expire_time:
                     is_authorized = True
-                        
+            
             if not is_authorized:
                 if isinstance(event, types.Message):
                     await event.answer("ᴄᴏɴᴛᴀᴄᴛ ᴜꜱ @iwillgoforwardsalone")
                 elif isinstance(event, types.CallbackQuery):
                     await event.answer("အသုံးပြုခွင့် သက်တမ်းကုန်သွားပါပြီ။", show_alert=True)
                 return 
-                
+        
         return await handler(event, data)
 
+dp.message.middleware(AuthMiddleware())
+dp.callback_query.middleware(AuthMiddleware())
 
 # ==========================================================
 # 🎡 AI Configuration
@@ -250,6 +231,7 @@ ai_engines.AI_MODES["circle_rnd"] = {
 }
 
 VALID_AI_NAMES = [m["name"] for m in ai_engines.AI_MODES.values()]
+VALID_AI_NAMES.append("🛠️ Set Pattern") # Explicitly add Custom Pattern Name
 
 # ==========================================================
 # 🗂️ FSM States
@@ -261,6 +243,7 @@ class LoginForm(StatesGroup):
     main_menu = State()
     enter_bet_sequence = State() 
     enter_profit_target = State()
+    enter_custom_pattern = State() # Custom Pattern State
 
 # ==========================================================
 # ⌨️ Keyboards
@@ -295,6 +278,10 @@ def get_ai_mode_keyboard():
     modes = list(AI_MODES.values())
     keyboard = []
     row = []
+    
+    # Custom Pattern Button
+    row.append(KeyboardButton(text="🛠️ Set Pattern", icon_custom_emoji_id="5985774024968379294", style="primary"))
+    
     for mode in modes:
         mode_name = mode["name"]
         emoji_id = AI_MODE_EMOJIS.get(mode_name, "5868656545634689320")
@@ -340,7 +327,6 @@ def get_cancel_keyboard():
 # ==========================================================
 @dp.message(F.text.startswith(".key "))
 async def cmd_generate_key(message: types.Message):
-    """တစ်ခုတည်းသော Key ကို ထုတ်ပေးရန် Command"""
     if message.from_user.id != OWNER_ID: return
     parts = message.text.split(" ")
     if len(parts) < 2:
@@ -359,7 +345,6 @@ async def cmd_generate_key(message: types.Message):
 
 @dp.message(F.text.startswith(".gen "))
 async def cmd_gen_keys(message: types.Message):
-    """Multiple Keys ကို တစ်ပြိုင်နက်တည်း ထုတ်ပေးရန် Command"""
     if message.from_user.id != OWNER_ID: return
     parts = message.text.split(" ")
     if len(parts) < 3:
@@ -386,7 +371,6 @@ async def cmd_gen_keys(message: types.Message):
 
 @dp.message(F.text.startswith(".add "))
 async def cmd_add_uid(message: types.Message):
-    """Telegram UID ကို Whitelist ထဲသို့ ထည့်သွင်းရန်"""
     if message.from_user.id != OWNER_ID: return
     parts = message.text.split(" ")
     if len(parts) < 2:
@@ -398,7 +382,6 @@ async def cmd_add_uid(message: types.Message):
 
 @dp.message(F.text.startswith(".del "))
 async def cmd_del_uid(message: types.Message):
-    """Telegram UID ကို Whitelist မှ ဖယ်ရှားရန်"""
     if message.from_user.id != OWNER_ID: return
     parts = message.text.split(" ")
     if len(parts) < 2:
@@ -468,7 +451,6 @@ async def process_phone(message: types.Message, state: FSMContext):
 # 📡 Custom API Calls
 # ==========================================================
 async def api_get_user_info(site: str, token: str):
-    """API မှတစ်ဆင့် User ၏ အချက်အလက်များကို ဆွဲယူရန်"""
     config = SITE_CONFIGS.get(site)
     url = f"{config['api_url']}/GetUserInfo"
     
@@ -480,8 +462,6 @@ async def api_get_user_info(site: str, token: str):
         async with session.post(url, headers=headers, json=signed_payload) as response:
             result = await response.json()
             return result
-
-
 
 # ==========================================================
 # 🔥 API Logic: Login & Database Save
@@ -526,7 +506,6 @@ async def process_password(message: types.Message, state: FSMContext):
             user_data = api_result.get("data", {})
             token = user_data.get("token", "") if isinstance(user_data, dict) else str(user_data)
             
-            # --- GetUserInfo API အသုံးပြုခြင်း ---
             user_info_res = await api_get_user_info(site_name, token)
             
             user_id = "N/A"
@@ -540,37 +519,6 @@ async def process_password(message: types.Message, state: FSMContext):
                 balance_val = info_data.get("balance", info_data.get("amount", 0.0))
                 balance_text = f"{balance_val} Ks"
             
-            # ==========================================
-            # 🛑 🌟 GAME UID အား စစ်ဆေးခြင်း (AUTHORIZATION CHECK) 🌟 🛑
-            # ==========================================
-            is_authorized = False
-            if user_tg_id == OWNER_ID:
-                is_authorized = True
-            else:
-                # ၁။ Game UID ကို Whitelist တွင် စစ်ဆေးခြင်း (.add 574335)
-                if await db.db["whitelist"].find_one({"uid": str(user_id)}):
-                    is_authorized = True
-                # ၂။ Telegram ID ကို Whitelist တွင် စစ်ဆေးခြင်း (လိုအပ်ပါက)
-                elif await db.db["whitelist"].find_one({"uid": str(user_tg_id)}):
-                    is_authorized = True
-                # ၃။ Key ရှိမရှိ စစ်ဆေးခြင်း
-                else:
-                    expire_iso = await db.get_user_subscription(user_tg_id)
-                    if expire_iso and get_myanmar_time() < datetime.fromisoformat(expire_iso):
-                        is_authorized = True
-
-            if not is_authorized:
-                await loading_msg.delete()
-                await message.answer(
-                    f"⚠️ <b>အသုံးပြုခွင့် မရှိပါ။</b>\n"
-                    f"သင်၏ Game UID: <code>{user_id}</code> ကို ဖြတ်သန်းခွင့်မပြုထားပါ။\n\n"
-                    f"ᴄᴏɴᴛᴀᴄᴛ ᴜꜱ @iwillgoforwardsalone",
-                    reply_markup=get_main_keyboard()
-                )
-                await state.clear()
-                return
-            # ==========================================
-
             site_login_time = get_myanmar_time().strftime("%Y-%m-%d %H:%M:%S")
 
             db_user = await db.get_user(user_tg_id)
@@ -580,17 +528,27 @@ async def process_password(message: types.Message, state: FSMContext):
             await db.save_user_login(user_tg_id, username, user_id, nickname, balance_text, site_login_time, ai_mode)
 
             await state.update_data(
-                is_logged_in=True, username=username, user_id=user_id,
-                nickname=nickname, balance=balance_text, login_time=site_login_time
+                is_logged_in=True, 
+                username=username, 
+                user_id=user_id,
+                nickname=nickname, 
+                balance=balance_text, 
+                login_time=site_login_time
             )
 
-            # active_sessions ထဲသို့ user_id ကိုပါ ထည့်သွင်းမှတ်သားထားခြင်း
             active_sessions[user_tg_id] = {
-                "site": site_name, "token": token, "user_id": user_id,
-                "is_auto_betting": False, "ai_mode": ai_mode,
-                "bet_sequence": [10], "current_bet_step": 0, "profit_target": 0,             
-                "start_balance": extract_balance(balance_text), "session_profit": 0.0, 
-                "hit_wait": 0, "current_misses": 0, "is_ai_prediction_enabled": False, 
+                "site": site_name,
+                "token": token,
+                "is_auto_betting": False,
+                "ai_mode": ai_mode,
+                "bet_sequence": [10],           
+                "current_bet_step": 0,          
+                "profit_target": 0,             
+                "start_balance": extract_balance(balance_text),
+                "session_profit": 0.0, 
+                "hit_wait": 0,
+                "current_misses": 0,
+                "is_ai_prediction_enabled": False, 
                 "last_predicted_issue": None       
             }
 
@@ -623,7 +581,6 @@ async def process_password(message: types.Message, state: FSMContext):
         await loading_msg.delete()
         await message.answer(f"⚠️ <b>Error:</b> {html.escape(str(e))}", reply_markup=get_main_keyboard())
         await state.clear()
-
 
 # ==========================================================
 # 📊 API Fetching Data
@@ -689,14 +646,32 @@ async def get_ai_prediction(user_tg_id):
                 history_docs.append({"size": size_text, "number": num})
             
             user_ai_name = session_data.get("ai_mode", "🎯 Pattern AI")
-            mode_key = "pattern"
-            for key, val in ai_engines.AI_MODES.items():
-                if val["name"] == user_ai_name:
-                    mode_key = key
-                    break
-                    
-            predicted_size, display_name, confidence, desc = ai_engines.get_prediction(history_docs, mode_key)
-            return predicted_size.lower(), confidence, next_issue, user_ai_name
+            
+            # --- Custom Pattern အတွက် ထပ်တိုး Logic ---
+            if user_ai_name == "🛠️ Set Pattern":
+                pat = session_data.get("custom_pattern", ["BIG"])
+                step = session_data.get("custom_pattern_step", 0)
+                target_bet = pat[step]
+
+                # Pattern ရဲ့ အစ (Step 0) ဖြစ်နေလျှင် ဆန့်ကျင်ဘက် ရလဒ်ထွက်/မထွက် စစ်ဆေးခြင်း
+                if step == 0:
+                    last_actual_num = int(records[0]['number'])
+                    last_actual_size = "BIG" if last_actual_num >= 5 else "SMALL"
+                    trigger = "SMALL" if target_bet == "BIG" else "BIG"
+
+                    if last_actual_size != trigger:
+                        return "wait", 100, next_issue, user_ai_name
+
+                return target_bet.lower(), 100, next_issue, user_ai_name
+            else:
+                mode_key = "pattern"
+                for key, val in ai_engines.AI_MODES.items():
+                    if val["name"] == user_ai_name:
+                        mode_key = key
+                        break
+                        
+                predicted_size, display_name, confidence, desc = ai_engines.get_prediction(history_docs, mode_key)
+                return predicted_size.lower(), confidence, next_issue, user_ai_name
         else:
             return None, 0, None, None
             
@@ -720,7 +695,6 @@ async def place_auto_bet(user_tg_id: int, current_issue: str, bet_type: str, tot
         
         select_type = get_select_type(bet_type)
         
-        # --- လောင်းကြေး (Multiplier) တွက်ချက်ခြင်း ---
         if total_amount >= 10000:
             base_amount = 10000
             bet_count = total_amount // 10000
@@ -734,7 +708,6 @@ async def place_auto_bet(user_tg_id: int, current_issue: str, bet_type: str, tot
             base_amount = 10
             bet_count = total_amount // 10
         
-        # API သို့ပို့မည့် Payload အား အမှန်တကယ် လက်ခံသော ပုံစံဖြင့် ဖွဲ့စည်းခြင်း
         payload = {
             'typeId': 30,
             'issuenumber': current_issue,
@@ -752,17 +725,14 @@ async def place_auto_bet(user_tg_id: int, current_issue: str, bet_type: str, tot
             async with session.post(url, headers=headers, json=signed_payload) as response:
                 result = await response.json()
                 
-        # လောင်းကြေးအောင်မြင်မှု ရှိ/မရှိ စစ်ဆေးခြင်း
         if result.get("code") == 0 or result.get("msg") == "success":
             return True
         else:
-            if not silent:
-                print(f"Betting failed API response: {result}")
+            if not silent: print(f"Betting failed API response: {result}")
             return False
 
     except Exception as e:
-        if not silent:
-            print(f"Betting Request Error: {e}")
+        if not silent: print(f"Betting Request Error: {e}")
         return False
 
 # ==========================================================
@@ -797,6 +767,10 @@ async def prediction_broadcast_loop(user_tg_id, message: types.Message):
     while active_sessions.get(user_tg_id, {}).get("is_ai_prediction_enabled", False):
         try:
             predicted_bet, confidence, current_issue, ai_name = await get_ai_prediction(user_tg_id)
+            if predicted_bet == "wait":
+                await asyncio.sleep(2)
+                continue
+
             last_issue = active_sessions[user_tg_id].get("last_predicted_issue")
 
             if current_issue and current_issue != last_issue:
@@ -888,6 +862,20 @@ async def auto_bet_loop(user_tg_id, message: types.Message):
                 api_error_count = 0 
                 if current_issue != last_betted_issue:
                     
+                    # --- Custom Pattern စောင့်ကြည့်သည့် အခြေအနေ ---
+                    if predicted_bet == "wait":
+                        msg = await message.answer(
+                             "<blockquote>"
+                             f"{E_DOC} <b>Pattern Trigger စောင့်ကြည့်နေပါသည်...</b>\n"
+                             f"{E_DOC} WINGO_30S : <code>{current_issue}</code>\n"
+                             f"{E_FLOWER} Status : ဆန့်ကျင်ဘက်ရလဒ် ထွက်ရန်စောင့်ဆိုင်းနေပါသည်"
+                             "</blockquote>"
+                        )
+                        last_betted_issue = current_issue
+                        asyncio.create_task(delete_message_later(msg, 7))
+                        await asyncio.sleep(2)
+                        continue 
+                    
                     # Hit Betting Logic
                     hit_wait = session.get("hit_wait", 0)
                     current_misses = session.get("current_misses", 0)
@@ -952,13 +940,13 @@ async def auto_bet_loop(user_tg_id, message: types.Message):
                     await message.answer(
                         "<blockquote>"
                         f"{E_DOC} WINGO_30S : <code>{current_issue}</code>\n"
-                        f"{E_DOC} Series : Ai Prediction\n"
+                        f"{E_DOC} Series : {ai_name}\n"
                         f"{E_FLOWER} Pred : <b>{predicted_bet.upper()}</b> | {current_amount} Ks"
                         "</blockquote>"
                     )
 
                     last_betted_issue = current_issue
-                    await asyncio.sleep(7) # Timing alignment
+                    await asyncio.sleep(7) 
 
                     success = await place_auto_bet(user_tg_id, current_issue, predicted_bet, current_amount, silent=True)
                     
@@ -970,7 +958,6 @@ async def auto_bet_loop(user_tg_id, message: types.Message):
                             actual_result = await get_latest_game_result(current_issue, user_tg_id)
                             if actual_result != "? | ?": break 
                         
-                        # Fetch new balance after bet result
                         new_bal_val = 0.0
                         async with aiohttp.ClientSession() as http_session:
                             async with http_session.post(balance_url, headers=bal_headers, json=get_signed_payload({'language': 7})) as resp:
@@ -997,6 +984,12 @@ async def auto_bet_loop(user_tg_id, message: types.Message):
                                 status_title = f"{E_SETTING} <b>LOSE</b> {E_LOSS} {current_amount:.2f} Ks"
                                 active_sessions[user_tg_id]["session_profit"] -= current_amount
                                 active_sessions[user_tg_id]["current_bet_step"] = (step + 1) % len(sequence)
+
+                            # --- Custom Pattern ကို Step တိုးရန် ---
+                            if ai_name == "🛠️ Set Pattern" and actual_size != "?":
+                                pat = active_sessions[user_tg_id].get("custom_pattern", ["BIG"])
+                                current_c_step = active_sessions[user_tg_id].get("custom_pattern_step", 0)
+                                active_sessions[user_tg_id]["custom_pattern_step"] = (current_c_step + 1) % len(pat)
                                 
                             current_profit = active_sessions[user_tg_id].get("session_profit", 0.0)
                             profit_display = f"+{current_profit:,.2f} Ks" if current_profit > 0 else f"{current_profit:,.2f} Ks"
@@ -1074,10 +1067,39 @@ async def cmd_ai_mode(message: types.Message):
     await message.answer(f"🤖 <b>AI Mode:</b> {current_mode}", reply_markup=get_ai_mode_keyboard())
 
 @dp.message(F.text.in_(VALID_AI_NAMES))
-async def set_ai_mode(message: types.Message):
+async def set_ai_mode(message: types.Message, state: FSMContext):
+    if message.text == "🛠️ Set Pattern":
+        await state.set_state(LoginForm.enter_custom_pattern)
+        return await message.answer("🛠️ <b>Custom Pattern သတ်မှတ်ရန်:</b>\n\nB (အကြီး) နှင့် S (အသေး) ကိုသာ အသုံးပြု၍ စာလုံးဆက်တိုက်ရိုက်ပါ။\nဥပမာ: <code>BSBS</code> သို့မဟုတ် <code>BBSS</code>", reply_markup=get_cancel_keyboard())
+
     active_sessions[message.from_user.id]["ai_mode"] = message.text
     await db.update_user_ai_mode(message.from_user.id, message.text)
     await message.answer(f"✅ AI စနစ်ကို <b>{message.text}</b> သို့ ပြောင်းလဲလိုက်ပါပြီ။", reply_markup=get_logged_in_keyboard())
+
+@dp.message(LoginForm.enter_custom_pattern)
+async def process_custom_pattern(message: types.Message, state: FSMContext):
+    if message.text.lower() == 'cancel':
+        await state.set_state(LoginForm.main_menu)
+        return await message.answer("❌ မပြောင်းလဲတော့ပါ။", reply_markup=get_logged_in_keyboard())
+
+    raw_pattern = message.text.upper().replace(" ", "")
+    if not all(c in ['B', 'S'] for c in raw_pattern) or len(raw_pattern) == 0:
+        return await message.answer("❌ မှားယွင်းနေပါသည်။ B နှင့် S ကိုသာ အသုံးပြုပါ။ (ဥပမာ: BSBS)")
+
+    pattern_list = ["BIG" if c == 'B' else "SMALL" for c in raw_pattern]
+    user_tg_id = message.from_user.id
+
+    if user_tg_id in active_sessions:
+        active_sessions[user_tg_id]["custom_pattern"] = pattern_list
+        active_sessions[user_tg_id]["custom_pattern_step"] = 0
+        active_sessions[user_tg_id]["ai_mode"] = "🛠️ Set Pattern"
+
+    await db.update_user_ai_mode(user_tg_id, "🛠️ Set Pattern")
+    await state.set_state(LoginForm.main_menu)
+
+    trigger = "SMALL" if pattern_list[0] == "BIG" else "BIG"
+    
+    await message.answer(f"✅ <b>Pattern သတ်မှတ်ပြီးပါပြီ:</b> <code>{raw_pattern}</code>\n\n🎯 <b>မှတ်ချက်:</b> အပြင်ရလဒ် <b>{trigger}</b> ထွက်ပေါ်ပြီးမှသာ ပထမဆုံးအကွက် ({pattern_list[0]}) ကို စတင်လောင်းပါမည်။", reply_markup=get_logged_in_keyboard())
 
 @dp.message(F.text == "🔙 ပင်မမီနူးသို့")
 async def back_to_main(message: types.Message):
