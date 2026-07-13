@@ -2,693 +2,935 @@
 # -*- coding: utf-8 -*-
 
 import asyncio
-import logging
-import json
-import time
-import uuid
-import hashlib
 import os
 import sys
+import logging
+import random
+import time
 import re
-from typing import Optional, Dict, Any, List
+import html
 from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
 
-import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, 
-    ContextTypes, MessageHandler, filters
-)
 from dotenv import load_dotenv
+from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+from aiogram.types import (
+    FSInputFile, ReplyKeyboardMarkup, KeyboardButton, 
+    ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+)
+
+from api_client import APIClient
+from config import Config
+from database import init_db, get_user, save_user_login, get_user_subscription, update_user_ai_mode, update_user_balance
 
 # ==========================================================
-# CONFIGURATION
+# LOAD ENVIRONMENT & SETUP LOGGING
 # ==========================================================
-
 load_dotenv()
 
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
-USERNAME = os.getenv('USERNAME', '959680090540')
-PASSWORD = os.getenv('PASSWORD', 'Bbynnds8825')
-BET_AMOUNT = int(os.getenv('BET_AMOUNT', 10))
-GAME_TYPE_ID = int(os.getenv('GAME_TYPE_ID', 30))
-SELECT_TYPE = int(os.getenv('SELECT_TYPE', 13))
-INTERVAL_SECONDS = int(os.getenv('INTERVAL_SECONDS', 15))
-API_BASE_URL = os.getenv('API_BASE_URL', 'https://api.bigwinqaz.com/api/webapi')
-LANGUAGE = int(os.getenv('LANGUAGE', 7))
-LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+LOG_LEVEL_NAME = os.getenv('LOG_LEVEL', 'INFO').upper()
+LOG_LEVEL = getattr(logging, LOG_LEVEL_NAME, logging.INFO)
 
 logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL.upper()),
+    level=LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 # ==========================================================
-# SITE CONFIGURATION
+# CONFIGURATION
 # ==========================================================
+BOT_TOKEN = Config.TELEGRAM_BOT_TOKEN
+OWNER_ID = Config.OWNER_ID
 
-SITE_CONFIGS = {
-    '777BIGWIN': {
-        'base_url': 'https://api.bigwinqaz.com/api/webapi',
-        'ar_origin': 'https://www.777bigwingame.app',
-        'origin': 'https://www.777bigwingame.app',
-        'referer': 'https://www.777bigwingame.app/',
-        'authority': 'api.bigwinqaz.com',
-        'min_bet': 10,
-        'select_type_big': 13,
-        'select_type_small': 14,
-    },
-    '6LOTTERY': {
-        'base_url': 'https://6lotteryapi.com/api/webapi',
-        'ar_origin': 'https://www.6win566.com',
-        'origin': 'https://www.6win566.com',
-        'referer': 'https://www.6win566.com/',
-        'authority': '6lotteryapi.com',
-        'min_bet': 100,
-        'select_type_big': 13,
-        'select_type_small': 14,
-    }
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
+
+active_sessions = {}
+
+# ==========================================================
+# TEXT CONSTANTS
+# ==========================================================
+TEXT_INFO = "Info"
+TEXT_BALANCE = "Balance"
+TEXT_STATUS = "Status"
+TEXT_START = "Start Auto-Bet"
+TEXT_STOP = "Stop Auto-Bet"
+TEXT_GAMES = "Games"
+TEXT_AI = "AI Mode"
+TEXT_BETSIZE = "Set Bet-Size"
+TEXT_PROFIT = "Profit Target"
+TEXT_HIT = "Hit Betting"
+TEXT_PREDICT = "AI Prediction"
+TEXT_LOGOUT = "Logout"
+TEXT_LOGIN = "Login"
+TEXT_BACK = "Back"
+
+# ==========================================================
+# PREMIUM EMOJI IDs
+# ==========================================================
+PREMIUM_EMOJIS = {
+    "info": "5868656545634689320",
+    "balance": "5868108575387671725",
+    "status": "5877443460725739250",
+    "games": "5868665489092263539",
+    "ai": "5877652234091891383",
+    "betsize": "5877260593903177342",
+    "profit": "5967574255670399788",
+    "hit": "5869547610204280761",
+    "predict": "5890997763331591703",
+    "login": "5884041323843955199",
+    "back": "5848119413041431362",
+    "start": "5884248697980608904",
+    "stop": "5884289942371401145",
+    "logout": "5875180111744995604",
 }
 
 # ==========================================================
-# SIGNATURE GENERATOR
+# KEYBOARD BUTTONS WITH PREMIUM EMOJIS
 # ==========================================================
-
-class SignatureGenerator:
-    def __init__(self, language: int = 7):
-        self.language = language
-    
-    def generate_random(self) -> str:
-        return uuid.uuid4().hex
-    
-    def generate_signature(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        clean_data = {k: v for k, v in data.items() 
-                     if k not in ['signature', 'timestamp']}
-        clean_data['language'] = self.language
-        clean_data['random'] = self.generate_random()
-        
-        sorted_data = {}
-        for key in sorted(clean_data.keys()):
-            value = clean_data[key]
-            if value is not None and value != '':
-                sorted_data[key] = value
-        
-        json_string = json.dumps(sorted_data, separators=(',', ':'))
-        signature = hashlib.md5(json_string.encode()).hexdigest().upper()
-        timestamp = int(time.time())
-        
-        return {
-            **clean_data,
-            'signature': signature,
-            'timestamp': timestamp
-        }
-
-# ==========================================================
-# API CLIENT
-# ==========================================================
-
-class APIClient:
-    def __init__(self, site: str = '777BIGWIN', token: str = "", language: int = 7):
-        self.site = site
-        self.site_config = SITE_CONFIGS.get(site, SITE_CONFIGS['777BIGWIN'])
-        self.base_url = self.site_config['base_url']
-        self.token = token
-        self.language = language
-        self.sig_gen = SignatureGenerator(language)
-        self.session = requests.Session()
-        self._last_request_time = 0
-        self._min_request_interval = 2.0
-        self._setup_headers()
-    
-    def _setup_headers(self):
-        config = self.site_config
-        
-        headers = {
-            'accept': 'application/json, text/plain, */*',
-            'accept-language': 'en-US,en;q=0.9',
-            'cache-control': 'no-cache',
-            'content-type': 'application/json;charset=UTF-8',
-            'pragma': 'no-cache',
-            'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
-        }
-        
-        headers.update({
-            'authority': config.get('authority', 'api.bigwinqaz.com'),
-            'ar-origin': config.get('ar_origin', 'https://www.777bigwingame.app'),
-            'ar-real-ip': '',
-            'origin': config.get('origin', 'https://www.777bigwingame.app'),
-            'referer': config.get('referer', 'https://www.777bigwingame.app/'),
-        })
-        
-        self.session.headers.update(headers)
-    
-    def get_min_bet(self) -> int:
-        return self.site_config.get('min_bet', 10)
-    
-    def get_select_type_big(self) -> int:
-        return self.site_config.get('select_type_big', 13)
-    
-    def get_select_type_small(self) -> int:
-        return self.site_config.get('select_type_small', 14)
-    
-    def set_token(self, token: str):
-        self.token = token
-        self.session.headers['authorization'] = f'Bearer {token}'
-    
-    def _rate_limit(self):
-        current_time = time.time()
-        time_since_last = current_time - self._last_request_time
-        if time_since_last < self._min_request_interval:
-            sleep_time = self._min_request_interval - time_since_last
-            time.sleep(sleep_time)
-        self._last_request_time = time.time()
-    
-    def _post(self, endpoint: str, data: Dict[str, Any], retry: int = 3) -> Dict[str, Any]:
-        self._rate_limit()
-        
-        for attempt in range(retry):
-            try:
-                signed_data = self.sig_gen.generate_signature(data)
-                response = self.session.post(
-                    f"{self.base_url}/{endpoint}",
-                    json=signed_data,
-                    timeout=30
-                )
-                result = response.json()
-                
-                if result.get('code') == 13:
-                    logger.warning(f"Rate limited, waiting 5 seconds...")
-                    time.sleep(5)
-                    continue
-                
-                return result
-                
-            except requests.exceptions.Timeout:
-                logger.warning(f"Request timeout, retry {attempt+1}/{retry}")
-                time.sleep(2)
-            except Exception as e:
-                logger.error(f"Request error: {e}")
-                if attempt == retry - 1:
-                    raise
-        
-        return {'code': -1, 'msg': 'Max retries exceeded'}
-    
-    def login(self, username: str, password: str) -> Dict[str, Any]:
-        data = {
-            'username': username,
-            'pwd': password,
-            'phonetype': 1,
-            'logintype': 'mobile',
-            'packId': '',
-            'deviceId': '51ed4ee0f338a1bb24063ffdfcd31ce6',
-            'pixelId': '',
-            'fbcId': '',
-            'fbc': '',
-            'fbp': '',
-            'adId': '',
-        }
-        return self._post('Login', data)
-    
-    def get_game_issue(self, type_id: int) -> Optional[str]:
-        try:
-            result = self._post('GetGameIssue', {'typeId': type_id})
-            
-            if result.get('code') != 0:
-                return None
-            
-            data = result.get('data')
-            
-            if isinstance(data, dict):
-                for key in ['issueNo', 'issuenumber', 'issueNumber']:
-                    if key in data and data[key]:
-                        return str(data[key])
-            
-            elif isinstance(data, str):
-                return data
-            
-            elif isinstance(data, list) and len(data) > 0:
-                return str(data[0])
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"GetGameIssue error: {e}")
-            return None
-    
-    def get_noaverage_emergd_list(self, type_id: int = 30, page_size: int = 10, page_no: int = 1) -> List[Dict]:
-        try:
-            result = self._post('GetNoaverageEmerdList', {
-                'typeId': type_id,
-                'pageSize': page_size,
-                'pageNo': page_no
-            })
-            
-            if result.get('code') == 0:
-                data = result.get('data', {})
-                if isinstance(data, dict):
-                    return data.get('list', [])
-                elif isinstance(data, list):
-                    return data
-            return []
-            
-        except Exception as e:
-            logger.error(f"GetNoaverageEmerdList error: {e}")
-            return []
-    
-    def place_bet(self, type_id: int, issue: str, select_type: int, 
-                  amount: int, bet_count: int = 1, game_type: int = 2) -> Dict:
-        return self._post('GameBetting', {
-            'typeId': type_id,
-            'issuenumber': issue,
-            'amount': amount,
-            'betCount': bet_count,
-            'gameType': game_type,
-            'selectType': select_type,
-        })
-    
-    def get_balance(self) -> float:
-        try:
-            result = self._post('GetBalance', {})
-            if result.get('code') == 0:
-                data = result.get('data', {})
-                if isinstance(data, dict):
-                    return float(data.get('amount', 0))
-            return 0.0
-        except:
-            return 0.0
+E_INFO = KeyboardButton(
+    text=TEXT_INFO,
+    icon_custom_emoji_id=PREMIUM_EMOJIS["info"],
+    style="primary"
+)
+E_BALANCE = KeyboardButton(
+    text=TEXT_BALANCE,
+    icon_custom_emoji_id=PREMIUM_EMOJIS["balance"],
+    style="primary"
+)
+E_STATUS = KeyboardButton(
+    text=TEXT_STATUS,
+    icon_custom_emoji_id=PREMIUM_EMOJIS["status"],
+    style="primary"
+)
+E_START = KeyboardButton(
+    text=TEXT_START,
+    icon_custom_emoji_id=PREMIUM_EMOJIS["start"],
+    style="success"
+)
+E_STOP = KeyboardButton(
+    text=TEXT_STOP,
+    icon_custom_emoji_id=PREMIUM_EMOJIS["stop"],
+    style="danger"
+)
+E_GAMES = KeyboardButton(
+    text=TEXT_GAMES,
+    icon_custom_emoji_id=PREMIUM_EMOJIS["games"],
+    style="primary"
+)
+E_AI = KeyboardButton(
+    text=TEXT_AI,
+    icon_custom_emoji_id=PREMIUM_EMOJIS["ai"],
+    style="primary"
+)
+E_BETSIZE = KeyboardButton(
+    text=TEXT_BETSIZE,
+    icon_custom_emoji_id=PREMIUM_EMOJIS["betsize"],
+    style="primary"
+)
+E_PROFIT = KeyboardButton(
+    text=TEXT_PROFIT,
+    icon_custom_emoji_id=PREMIUM_EMOJIS["profit"],
+    style="primary"
+)
+E_HIT = KeyboardButton(
+    text=TEXT_HIT,
+    icon_custom_emoji_id=PREMIUM_EMOJIS["hit"],
+    style="primary"
+)
+E_PREDICT = KeyboardButton(
+    text=TEXT_PREDICT,
+    icon_custom_emoji_id=PREMIUM_EMOJIS["predict"],
+    style="primary"
+)
+E_LOGOUT = KeyboardButton(
+    text=TEXT_LOGOUT,
+    icon_custom_emoji_id=PREMIUM_EMOJIS["logout"],
+    style="danger"
+)
+E_LOGIN = KeyboardButton(
+    text=TEXT_LOGIN,
+    icon_custom_emoji_id=PREMIUM_EMOJIS["login"],
+    style="primary"
+)
+E_BACK = KeyboardButton(
+    text=TEXT_BACK,
+    icon_custom_emoji_id=PREMIUM_EMOJIS["back"],
+    style="primary"
+)
 
 # ==========================================================
-# AI PREDICTION (Simple Version)
+# PREMIUM EMOJIS FOR MESSAGES
 # ==========================================================
-
-def get_ai_prediction(history_docs: List[Dict]) -> str:
-    """Simple AI prediction - returns 'BIG' or 'SMALL'"""
-    if not history_docs:
-        return "BIG"
-    
-    # Count BIG and SMALL
-    big_count = 0
-    small_count = 0
-    
-    for item in history_docs:
-        size = item.get('size', '').upper()
-        if size == 'BIG':
-            big_count += 1
-        elif size == 'SMALL':
-            small_count += 1
-    
-    # Predict based on majority
-    if big_count > small_count:
-        return "BIG"
-    elif small_count > big_count:
-        return "SMALL"
-    else:
-        # Default to BIG if equal
-        return "BIG"
+P_1 = '<tg-emoji emoji-id="5890997763331591703">🔮</tg-emoji>'
+P_2 = '<tg-emoji emoji-id="5875180111744995604">🚪</tg-emoji>'
+P_3 = '<tg-emoji emoji-id="5877443460725739250">📊</tg-emoji>'
+P_4 = '<tg-emoji emoji-id="5967574255670399788">🎯</tg-emoji>'
+P_5 = '<tg-emoji emoji-id="5807868868886009920">⭐</tg-emoji>'
+P_6 = '<tg-emoji emoji-id="5807461353799030682">🌟</tg-emoji>'
 
 # ==========================================================
-# TELEGRAM BOT
+# KEYBOARD FUNCTIONS
 # ==========================================================
-
-class AutoBetBot:
-    def __init__(self, username: str = None, password: str = None):
-        self.username = username or USERNAME
-        self.password = password or PASSWORD
-        self.api = None
-        self.site = '777BIGWIN'
-        self.is_running = False
-        self.bet_task = None
-        
-        self.bet_config = {
-            'type_id': GAME_TYPE_ID,
-            'select_type': SELECT_TYPE,
-            'amount': BET_AMOUNT,
-            'bet_count': 1,
-            'game_type': 2
-        }
-        
-        self.current_issue = None
-        self.stats = {
-            'total_bets': 0,
-            'wins': 0,
-            'losses': 0,
-            'profit': 0
-        }
-        self.consecutive_failures = 0
-        self.history = []  # For AI prediction
-    
-    def get_min_bet(self) -> int:
-        if self.site == '6LOTTERY':
-            return 100
-        else:
-            return 10
-    
-    def get_select_type_for_bet(self, bet_type: str) -> int:
-        """Get select type based on bet type (BIG or SMALL)"""
-        if bet_type.upper() == 'BIG':
-            if self.site == '6LOTTERY':
-                return 13  # 6LOTTERY BIG = 13
-            else:
-                return 13  # 777BIGWIN BIG = 13
-        else:  # SMALL
-            if self.site == '6LOTTERY':
-                return 14  # 6LOTTERY SMALL = 14
-            else:
-                return 14  # 777BIGWIN SMALL = 14
-    
-    async def login(self, site: str = '777BIGWIN') -> bool:
-        self.site = site
-        self.api = APIClient(site=site)
-        
-        try:
-            result = self.api.login(self.username, self.password)
-            if result.get('code') == 0:
-                token = result['data']['token']
-                self.api.set_token(token)
-                
-                # Check and adjust bet amount
-                min_bet = self.get_min_bet()
-                if self.bet_config['amount'] < min_bet:
-                    self.bet_config['amount'] = min_bet
-                    logger.info(f"💰 Bet amount auto-adjusted to {min_bet} for {site}")
-                
-                logger.info(f"✅ Login successful! Site: {site}")
-                return True
-            else:
-                logger.error(f"❌ Login failed: {result.get('msg')}")
-                return False
-        except Exception as e:
-            logger.error(f"❌ Login error: {e}")
-            return False
-    
-    async def get_current_issue(self) -> Optional[str]:
-        type_id = self.bet_config['type_id']
-        
-        for attempt in range(5):
-            try:
-                issue = self.api.get_game_issue(type_id)
-                if issue:
-                    return issue
-                await asyncio.sleep(3)
-            except Exception as e:
-                logger.error(f"Get issue attempt {attempt+1} failed: {e}")
-                await asyncio.sleep(2)
-        
-        return None
-    
-    async def get_history(self) -> List[Dict]:
-        """Get betting history for AI prediction"""
-        try:
-            result = self.api.get_noaverage_emergd_list(type_id=30, page_size=10)
-            if result:
-                return result
-            return []
-        except Exception as e:
-            logger.error(f"Get history error: {e}")
-            return []
-    
-    async def place_bet(self) -> bool:
-        type_id = self.bet_config['type_id']
-        
-        # Get current issue
-        issue = await self.get_current_issue()
-        if not issue:
-            logger.warning("❌ No issue number available")
-            return False
-        
-        if issue == self.current_issue:
-            logger.info(f"⏳ Already bet on issue {issue}, waiting for next...")
-            return False
-        
-        # Get AI prediction
-        history = await self.get_history()
-        prediction = get_ai_prediction(history)
-        
-        # Get select type based on prediction
-        select_type = self.get_select_type_for_bet(prediction)
-        
-        logger.info(f"🤖 AI Prediction: {prediction} (select_type: {select_type})")
-        
-        try:
-            result = self.api.place_bet(
-                type_id=type_id,
-                issue=issue,
-                select_type=select_type,
-                amount=self.bet_config['amount'],
-                bet_count=self.bet_config['bet_count'],
-                game_type=self.bet_config['game_type']
-            )
-            
-            if result.get('code') == 0:
-                self.current_issue = issue
-                self.stats['total_bets'] += 1
-                self.consecutive_failures = 0
-                logger.info(f"✅ Bet placed on issue {issue} - {prediction}")
-                return True
-            else:
-                msg = result.get('msg', 'Unknown error')
-                logger.warning(f"❌ Bet failed: {msg}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"❌ Place bet error: {e}")
-            return False
-    
-    async def run_auto_bet(self):
-        if self.api is None:
-            logger.error("❌ Not logged in")
-            return
-        
-        self.is_running = True
-        
-        logger.info(f"🔄 Auto betting started - Site: {self.site}, Min Bet: {self.get_min_bet()}")
-        logger.info(f"💰 Bet Amount: {self.bet_config['amount']}")
-        
-        while self.is_running:
-            try:
-                success = await self.place_bet()
-                
-                if success:
-                    self.consecutive_failures = 0
-                else:
-                    self.consecutive_failures += 1
-                
-                wait_time = INTERVAL_SECONDS
-                if self.consecutive_failures > 5:
-                    wait_time = 30
-                elif self.consecutive_failures > 3:
-                    wait_time = 20
-                
-                await asyncio.sleep(wait_time)
-                
-            except Exception as e:
-                logger.error(f"Auto bet loop error: {e}")
-                await asyncio.sleep(10)
-    
-    async def stop_auto_bet(self):
-        self.is_running = False
-        if self.bet_task:
-            self.bet_task.cancel()
-        logger.info("⏹ Auto betting stopped")
-    
-    def get_stats(self) -> str:
-        total = self.stats['total_bets']
-        wins = self.stats['wins']
-        win_rate = (wins / max(total, 1)) * 100
-        
-        return (
-            f"📊 *Betting Statistics*\n"
-            f"─────────────────\n"
-            f"🌐 *Site:* {self.site}\n"
-            f"💰 *Min Bet:* {self.get_min_bet()} Kyats\n"
-            f"🎯 *Total Bets:* {total}\n"
-            f"✅ *Wins:* {wins}\n"
-            f"❌ *Losses:* {self.stats['losses']}\n"
-            f"💰 *Profit:* {self.stats['profit']} USDT\n"
-            f"📈 *Win Rate:* {win_rate:.1f}%"
-        )
-    
-    def get_balance_text(self) -> str:
-        if self.api is None:
-            return "❌ Not logged in"
-        balance = self.api.get_balance()
-        return f"💰 *Balance:* {balance} USDT\n🌐 *Site:* {self.site}"
-
-# ==========================================================
-# SITE SELECTION KEYBOARD
-# ==========================================================
-
-def get_site_keyboard():
-    keyboard = [
-        [
-            InlineKeyboardButton("🟢 777BIGWIN", callback_data="site_777BIGWIN"),
-            InlineKeyboardButton("🔴 6LOTTERY", callback_data="site_6LOTTERY"),
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
 
 def get_main_keyboard():
-    keyboard = [
-        [
-            InlineKeyboardButton("▶️ Start Auto Bet", callback_data="start_bot"),
-            InlineKeyboardButton("⏹ Stop Auto Bet", callback_data="stop_bot"),
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [E_LOGIN]
         ],
-        [
-            InlineKeyboardButton("💰 Balance", callback_data="balance"),
-            InlineKeyboardButton("📊 Stats", callback_data="stats"),
-        ],
-        [
-            InlineKeyboardButton("🔄 Refresh Login", callback_data="refresh"),
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# ==========================================================
-# TELEGRAM HANDLERS
-# ==========================================================
-
-bot = AutoBetBot()
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"🤖 *Auto Bet Bot*\n\n"
-        f"Welcome! Please select your site:",
-        reply_markup=get_site_keyboard(),
-        parse_mode='Markdown'
+        resize_keyboard=True
     )
 
-async def site_selection_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    site = query.data.replace("site_", "")
-    
-    await query.edit_message_text(f"🔄 Logging in to {site}...")
-    
-    success = await bot.login(site)
-    
-    if success:
-        min_bet = bot.get_min_bet()
-        
-        await query.edit_message_text(
-            f"✅ *Login successful!*\n\n"
-            f"🌐 *Site:* {site}\n"
-            f"💰 *Min Bet:* {min_bet} Kyats\n"
-            f"💵 *Bet Amount:* {bot.bet_config['amount']} Kyats\n\n"
-            f"Use the buttons below to control the bot.",
-            reply_markup=get_main_keyboard(),
-            parse_mode='Markdown'
+def get_site_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="777BIGWIN", style="success"),
+                KeyboardButton(text="6LOTTERY", style="danger")
+            ],
+            [E_BACK]
+        ],
+        resize_keyboard=True
+    )
+
+def get_logged_in_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [E_INFO, E_BALANCE, E_STATUS],
+            [E_START, E_STOP],
+            [E_GAMES, E_AI],
+            [E_BETSIZE, E_PROFIT],
+            [E_HIT, E_PREDICT],
+            [E_LOGOUT]
+        ],
+        resize_keyboard=True
+    )
+
+def get_cancel_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Cancel")]],
+        resize_keyboard=True
+    )
+
+def get_ai_mode_keyboard():
+    from ai_engines import AI_MODES
+    keyboard = []
+    row = []
+    for key, mode in AI_MODES.items():
+        mode_name = mode["name"]
+        btn = KeyboardButton(text=mode_name)
+        row.append(btn)
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([E_BACK])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+# ==========================================================
+# INLINE KEYBOARDS
+# ==========================================================
+
+def get_hit_betting_inline_keyboard(current_wait: int = 0):
+    keyboard = []
+    number_buttons = []
+    for i in range(1, 10):
+        btn_style = "success" if current_wait == i else "primary"
+        number_buttons.append(
+            InlineKeyboardButton(text=str(i), callback_data=f"hitbet_{i}", style=btn_style)
+        )
+    for i in range(0, 9, 3):
+        keyboard.append(number_buttons[i:i+3])
+    disable_text = "0 (Disabled)" if current_wait == 0 else "0 (Disable)"
+    keyboard.append([InlineKeyboardButton(text=disable_text, callback_data="hitbet_0", style="danger")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def get_ai_prediction_toggle_keyboard(is_enabled: bool):
+    if is_enabled:
+        btn = InlineKeyboardButton(text="✅ Enabled", callback_data="toggle_aipred", style="success")
+    else:
+        btn = InlineKeyboardButton(text="❌ Disabled", callback_data="toggle_aipred", style="danger")
+    return InlineKeyboardMarkup(inline_keyboard=[[btn]])
+
+# ==========================================================
+# 🛠️ HELPER FUNCTIONS
+# ==========================================================
+
+def extract_balance(bal_str: str) -> float:
+    try:
+        clean_str = re.sub(r'[^\d.]', '', bal_str)
+        if clean_str:
+            return float(clean_str)
+        return 0.0
+    except Exception:
+        return 0.0
+
+async def delete_message_later(msg: types.Message, delay: int = 5):
+    await asyncio.sleep(delay)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+def parse_duration(duration_str: str):
+    duration_str = duration_str.upper()
+    if duration_str.endswith('H') and duration_str[:-1].isdigit():
+        return timedelta(hours=int(duration_str[:-1]))
+    elif duration_str.endswith('D') and duration_str[:-1].isdigit():
+        return timedelta(days=int(duration_str[:-1]))
+    return None
+
+def get_myanmar_time() -> datetime:
+    return datetime.utcnow() + timedelta(hours=6, minutes=30)
+
+# ==========================================================
+# 🛡️ AUTH MIDDLEWARE
+# ==========================================================
+
+class AuthMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        user_id = None
+        text = ""
+
+        if isinstance(event, types.Message):
+            user_id = event.from_user.id
+            text = event.text or ""
+        elif isinstance(event, types.CallbackQuery):
+            user_id = event.from_user.id
+
+        if user_id:
+            if user_id == OWNER_ID:
+                return await handler(event, data)
+
+            if isinstance(event, types.Message) and len(text) == 16 and text[:8].isdigit() and text[8:].isupper():
+                return await handler(event, data)
+
+            expire_iso = await get_user_subscription(user_id)
+            is_authorized = False
+
+            if expire_iso:
+                expire_time = datetime.fromisoformat(expire_iso)
+                if get_myanmar_time() < expire_time:
+                    is_authorized = True
+
+            if not is_authorized:
+                if isinstance(event, types.Message):
+                    await event.answer(
+                        "❌ သင့်အကောင့်သက်တမ်းကုန်ဆုံးသွားပါပြီ။\n"
+                        "🔑 Key တစ်ခုထည့်သွင်းရန် သို့မဟုတ် @iwillgoforwardsalone ကိုဆက်သွယ်ပါ။"
+                    )
+                elif isinstance(event, types.CallbackQuery):
+                    await event.answer("❌ သင့်အကောင့်သက်တမ်းကုန်ဆုံးသွားပါပြီ။", show_alert=True)
+                return
+
+        return await handler(event, data)
+
+dp.message.middleware(AuthMiddleware())
+dp.callback_query.middleware(AuthMiddleware())
+
+# ==========================================================
+# 🗂️ FSM STATES
+# ==========================================================
+
+class LoginForm(StatesGroup):
+    select_site = State()
+    enter_phone = State()
+    enter_password = State()
+    main_menu = State()
+    enter_bet_sequence = State()
+    enter_profit_target = State()
+
+# ==========================================================
+# 🔑 OWNER COMMANDS
+# ==========================================================
+
+@dp.message(F.text.startswith(".key "))
+async def cmd_generate_key(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    from database import create_key
+
+    parts = message.text.split(" ")
+    if len(parts) < 2:
+        return await message.answer("⚠️ Format မှားနေပါသည်။\nဥပမာ: <code>.key 2H</code>, <code>.key 5D</code>")
+
+    duration = parts[1].strip().upper()
+    if not parse_duration(duration):
+        return await message.answer("⚠️ မှားယွင်းနေပါသည်။\nဥပမာ: <code>2H</code>, <code>5D</code>, <code>15D</code>")
+
+    date_prefix = get_myanmar_time().strftime("%Y%m%d")
+    random_str = ''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ', k=8))
+    key_str = f"{date_prefix}{random_str}"
+
+    await create_key(key_str, duration)
+
+    await message.answer(
+        f"✅ <b>Key အောင်မြင်စွာဖန်တီးပြီးပါပြီ</b>\n\n"
+        f"🔑 Key: <code>{key_str}</code>\n"
+        f"⏱️ Duration: <b>{duration}</b>\n\n"
+        f"(User များ ဤ Key ကို Copy ကူးပြီး ထည့်သွင်းနိုင်ပါသည်)"
+    )
+
+@dp.message(F.text.startswith(".add "))
+async def cmd_add_user(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    from database import update_user_subscription
+
+    parts = message.text.split(" ")
+    if len(parts) < 3:
+        return await message.answer("⚠️ Format မှားနေပါသည်။\nဥပမာ: <code>.add 123456789 2D</code>")
+
+    target_id = parts[1].strip()
+    duration = parts[2].strip().upper()
+
+    td = parse_duration(duration)
+    if not td:
+        return await message.answer("⚠️ Duration မှားနေပါသည်။ (ဥပမာ: 2H, 5D)")
+
+    new_expire = get_myanmar_time() + td
+    await update_user_subscription(int(target_id), new_expire.isoformat())
+
+    await message.answer(
+        f"✅ User ID: <code>{target_id}</code> ကို <b>{duration}</b> စာ အသုံးပြုခွင့် ပေးလိုက်ပါပြီ\n"
+        f"ကုန်ဆုံးမည့်အချိန်: {new_expire.strftime('%Y-%m-%d %I:%M %p')} (MMT)"
+    )
+
+# ==========================================================
+# 🔑 USER KEY REDEMPTION HANDLER
+# ==========================================================
+
+@dp.message(lambda msg: msg.text and len(msg.text) == 16 and msg.text[:8].isdigit() and msg.text[8:].isupper())
+async def process_key_redemption(message: types.Message):
+    from database import get_key, delete_key, update_user_subscription, get_user_subscription
+
+    key_str = message.text.strip()
+    key_data = await get_key(key_str)
+
+    if key_data:
+        duration = key_data["duration"]
+        td = parse_duration(duration)
+        if not td:
+            td = timedelta(days=1)
+
+        user_id = message.from_user.id
+        current_expire = get_myanmar_time()
+
+        existing_expire_iso = await get_user_subscription(user_id)
+        if existing_expire_iso:
+            old_expire = datetime.fromisoformat(existing_expire_iso)
+            if old_expire > get_myanmar_time():
+                current_expire = old_expire
+
+        new_expire = current_expire + td
+        await update_user_subscription(user_id, new_expire.isoformat())
+
+        await delete_key(key_str)
+
+        await message.answer(
+            f"✅ Key အောင်မြင်စွာ အသုံးပြုပြီးပါပြီ\n"
+            f"⏱️ သက်တမ်း <b>{new_expire.strftime('%Y-%m-%d %I:%M %p')}</b> (MMT) အထိ ရရှိပါပြီ\n"
+            f"🔄 /start ကို ပြန်နှိပ်ပါ။"
         )
     else:
-        await query.edit_message_text(
-            f"❌ *Login failed!*\n\n"
-            f"Please check your credentials.",
-            parse_mode='Markdown'
-        )
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "start_bot":
-        if bot.is_running:
-            await query.edit_message_text("ℹ️ Bot is already running!", parse_mode='Markdown')
-            return
-        
-        if bot.api is None:
-            await query.edit_message_text("❌ Please login first using /start", parse_mode='Markdown')
-            return
-        
-        bot.bet_task = asyncio.create_task(bot.run_auto_bet())
-        await query.edit_message_text("🟢 *Auto bet started!*", parse_mode='Markdown')
-    
-    elif query.data == "stop_bot":
-        if not bot.is_running:
-            await query.edit_message_text("ℹ️ Bot is already stopped!", parse_mode='Markdown')
-            return
-        
-        await bot.stop_auto_bet()
-        await query.edit_message_text("🔴 *Auto bet stopped!*", parse_mode='Markdown')
-    
-    elif query.data == "balance":
-        await query.edit_message_text(bot.get_balance_text(), parse_mode='Markdown')
-    
-    elif query.data == "stats":
-        await query.edit_message_text(bot.get_stats(), parse_mode='Markdown')
-    
-    elif query.data == "refresh":
-        await query.edit_message_text("🔄 *Refreshing login...*", parse_mode='Markdown')
-        if await bot.login(bot.site):
-            await query.edit_message_text("✅ *Login refreshed!*", parse_mode='Markdown')
-        else:
-            await query.edit_message_text("❌ *Login refresh failed!*", parse_mode='Markdown')
-
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    
-    if text == "/stop":
-        await bot.stop_auto_bet()
-        await update.message.reply_text("🔴 Bot stopped!")
-    
-    elif text == "/status":
-        status = "🟢 Running" if bot.is_running else "🔴 Stopped"
-        await update.message.reply_text(
-            f"🤖 *Status:* {status}\n"
-            f"🌐 *Site:* {bot.site}\n"
-            f"💰 *Min Bet:* {bot.get_min_bet()} Kyats",
-            parse_mode='Markdown'
-        )
-    
-    elif text.startswith("/bet"):
-        parts = text.split()
-        if len(parts) >= 2:
-            try:
-                amount = int(parts[1])
-                min_bet = bot.get_min_bet()
-                if amount < min_bet:
-                    await update.message.reply_text(
-                        f"❌ {bot.site} requires minimum {min_bet} Kyats!",
-                        parse_mode='Markdown'
-                    )
-                    return
-                bot.bet_config['amount'] = amount
-                await update.message.reply_text(f"✅ Bet amount set to {amount} Kyats")
-            except ValueError:
-                await update.message.reply_text("❌ Please enter a valid number")
-    
-    elif text == "/balance":
-        await update.message.reply_text(bot.get_balance_text(), parse_mode='Markdown')
+        await message.answer("❌ ဤ Key မှားယွင်းနေပါသည် သို့မဟုတ် သက်တမ်းကုန်ဆုံးသွားပါပြီ။")
 
 # ==========================================================
-# MAIN
+# 🤖 STANDARD BOT HANDLERS
 # ==========================================================
 
-def main():
-    if not TELEGRAM_BOT_TOKEN:
-        print("❌ ERROR: TELEGRAM_BOT_TOKEN is not set!")
-        return
-    
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        f"{P_5} <b>Welcome to Auto Bet Bot!</b>\n\n"
+        f"Site ရွေးရန် <b>Login</b> ကိုနှိပ်ပါ။",
+        reply_markup=get_main_keyboard()
+    )
+
+@dp.message(F.text == TEXT_LOGIN)
+async def login_start(message: types.Message, state: FSMContext):
+    await state.set_state(LoginForm.select_site)
+    await message.answer(
+        f"{P_1} သင်ဝင်ရောက်လိုသော Site ကို ရွေးချယ်ပါ",
+        reply_markup=get_site_keyboard()
+    )
+
+@dp.message(LoginForm.select_site)
+async def process_site(message: types.Message, state: FSMContext):
+    if message.text == "🔙 Back":
+        await state.clear()
+        return await message.answer("❌ ပယ်ဖျက်လိုက်ပါပြီ", reply_markup=get_main_keyboard())
+    await state.update_data(site=message.text)
+    await state.set_state(LoginForm.enter_phone)
+    await message.answer(
+        f"{P_1} သင့်ဖုန်းနံပါတ်ကို ရိုက်ထည့်ပါ",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+@dp.message(LoginForm.enter_phone)
+async def process_phone(message: types.Message, state: FSMContext):
+    await state.update_data(phone=message.text)
+    await state.set_state(LoginForm.enter_password)
+    await message.answer(
+        f"{P_1} သင့်စကားဝှက်ကို ရိုက်ထည့်ပါ",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+# ==========================================================
+# 🔥 API LOGIN LOGIC - SITE AUTO DETECT
+# ==========================================================
+
+@dp.message(LoginForm.enter_password)
+async def process_password(message: types.Message, state: FSMContext):
+    password = message.text
+    data = await state.get_data()
+    username = data.get('phone')
+    site_name = data.get('site', '777BIGWIN')
+    user_tg_id = message.from_user.id
+
+    api_client = APIClient(site=site_name)
+
     try:
-        print("=" * 50)
-        print("🤖 Auto Bet Bot Starting...")
-        print("=" * 50)
-        print(f"🎮 Game Type: {GAME_TYPE_ID}")
-        print(f"💰 Bet Amount: {BET_AMOUNT} USDT")
-        print("=" * 50)
-        
-        app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CallbackQueryHandler(site_selection_handler, pattern="^site_"))
-        app.add_handler(CallbackQueryHandler(button_handler, pattern="^(start_bot|stop_bot|balance|stats|refresh)$"))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-        
-        print("🔄 Starting bot polling...")
-        app.run_polling()
-        
-    except Exception as e:
-        print(f"❌ Error: {e}")
+        loading_msg = await message.answer(f"{P_1} အကောင့်ဝင်ရန် ကြိုးစားနေပါသည်...")
 
-if __name__ == "__main__":
-    main()
+        result = api_client.login(username, password)
+
+        if result.get('code') != 0:
+            await loading_msg.delete()
+            await message.answer(
+                f"❌ အကောင့်ဝင်ရန် မအောင်မြင်ပါ:\n{result.get('msg', 'Unknown error')}",
+                reply_markup=get_main_keyboard()
+            )
+            await state.clear()
+            return
+
+        token = result['data']['token']
+        api_client.set_token(token)
+
+        user_info = api_client.get_user_info()
+        user_data = user_info.get('data', {})
+        user_id = user_data.get('userId', 'N/A')
+        nickname = user_data.get('nickName', 'Unknown')
+        balance = str(user_data.get('amount', 0))
+
+        balance_value = api_client.get_balance()
+        site_login_time = get_myanmar_time().strftime("%Y-%m-%d %H:%M:%S")
+
+        db_user = await get_user(user_tg_id)
+        ai_mode = db_user.get("ai_mode", "Pattern AI") if db_user else "Pattern AI"
+
+        await save_user_login(
+            user_tg_id, username, user_id,
+            nickname, balance, site_login_time, ai_mode
+        )
+
+        min_bet = 100 if site_name == '6LOTTERY' else 10
+        default_sequence = [100, 200, 400, 800] if site_name == '6LOTTERY' else [10, 20, 40, 80]
+
+        await state.update_data(
+            is_logged_in=True,
+            username=username,
+            user_id=user_id,
+            nickname=nickname,
+            balance=balance,
+            login_time=site_login_time,
+            token=token
+        )
+
+        active_sessions[user_tg_id] = {
+            "site": site_name,
+            "api_client": api_client,
+            "is_auto_betting": False,
+            "ai_mode": ai_mode,
+            "bet_sequence": default_sequence,
+            "current_bet_step": 0,
+            "profit_target": 0,
+            "start_balance": float(balance) if balance else 0.0,
+            "session_profit": 0.0,
+            "hit_wait": 0,
+            "current_misses": 0,
+            "is_ai_prediction_enabled": False,
+            "last_predicted_issue": None,
+            "current_win_streak": 0,
+            "current_lose_streak": 0,
+            "longest_win_streak": 0,
+            "longest_lose_streak": 0,
+            "last_betted_issue": None,
+            "token": token,
+            "min_bet": min_bet
+        }
+
+        await loading_msg.delete()
+
+        caption_text = (
+            f"{P_5} <b>LOGIN SUCCESSFUL!</b>\n"
+            "─────────────────\n\n"
+            f"🌐 <b>Site:</b> <code>{site_name}</code>\n"
+            f"💰 <b>Min Bet:</b> <code>{min_bet} Kyats</code>\n\n"
+            "👤 <b>User Information:</b>\n"
+            f"├─ 🆔 <b>User ID:</b> <code>{user_id}</code>\n"
+            f"├─ 📱 <b>Username:</b> <code>{username}</code>\n"
+            f"├─ 🏷️ <b>Nickname:</b> {nickname}\n"
+            f"├─ 💰 <b>Balance:</b> <code>{balance}</code>\n"
+            f"└─ 📅 <b>Login Date:</b> {site_login_time}\n"
+            "─────────────────\n"
+            "<b>🤖 AUTO BET BOT | SYSTEM VERIFIED</b>"
+        )
+
+        await message.answer(caption_text, reply_markup=get_logged_in_keyboard())
+        await state.set_state(LoginForm.main_menu)
+
+    except Exception as e:
+        await message.answer(
+            f"⚠️ <b>Error:</b> {html.escape(str(e))}",
+            reply_markup=get_main_keyboard()
+        )
+        await state.clear()
+        if 'api_client' in locals():
+            await api_client.close()
+
+# ==========================================================
+# 🤖 HANDLERS (AI, Hit, Profit, etc.)
+# ==========================================================
+
+@dp.message(F.text == TEXT_AI)
+async def cmd_ai_mode(message: types.Message):
+    user_tg_id = message.from_user.id
+    if user_tg_id not in active_sessions:
+        return await message.answer("⚠️ ကျေးဇူးပြု၍ Login ဦးစွာပြုလုပ်ပါ")
+    await message.answer("🧠 <b>AI Mode</b>", reply_markup=get_ai_mode_keyboard())
+
+@dp.message(F.text == TEXT_HIT)
+async def btn_hit_betting(message: types.Message):
+    user_tg_id = message.from_user.id
+    if user_tg_id not in active_sessions:
+        return await message.answer("⚠️ ကျေးဇူးပြု၍ Login ဦးစွာပြုလုပ်ပါ")
+    current_wait = active_sessions[user_tg_id].get("hit_wait", 0)
+    await message.answer(
+        f"{P_1} <b>Hit Betting System</b>",
+        reply_markup=get_hit_betting_inline_keyboard(current_wait)
+    )
+
+@dp.callback_query(F.data.startswith("hitbet_"))
+async def process_hit_bet(callback: types.CallbackQuery):
+    user_tg_id = callback.from_user.id
+    wait_count = int(callback.data.split("_")[1])
+    if user_tg_id in active_sessions:
+        active_sessions[user_tg_id]["hit_wait"] = wait_count
+        active_sessions[user_tg_id]["current_misses"] = 0
+    await callback.message.edit_reply_markup(reply_markup=get_hit_betting_inline_keyboard(wait_count))
+    await callback.answer(f"✅ Set to {wait_count}" if wait_count > 0 else "❌ Disabled")
+
+@dp.message(F.text == TEXT_PROFIT)
+async def btn_set_profit_target(message: types.Message, state: FSMContext):
+    user_tg_id = message.from_user.id
+    if user_tg_id not in active_sessions:
+        return await message.answer("⚠️ ကျေးဇူးပြု၍ Login ဦးစွာပြုလုပ်ပါ")
+    current_target = active_sessions[user_tg_id].get("profit_target", 0)
+    await state.set_state(LoginForm.enter_profit_target)
+    await message.answer(
+        f"{P_4} <b>Auto Bet ရည်မှန်ချက် (Profit Target)</b>\n"
+        f"လက်ရှိ Target: <b>{current_target} Ks</b>",
+        reply_markup=get_cancel_keyboard()
+    )
+
+@dp.message(LoginForm.enter_profit_target)
+async def process_profit_target(message: types.Message, state: FSMContext):
+    user_tg_id = message.from_user.id
+    text = message.text.strip()
+    if text.lower() == 'cancel':
+        await state.set_state(LoginForm.main_menu)
+        return await message.answer("❌ ဖျက်သိမ်းလိုက်ပါပြီ", reply_markup=get_logged_in_keyboard())
+    if not text.isdigit():
+        return await message.answer("❌ ဂဏန်းသာ ရိုက်ထည့်ပါ")
+    target_amount = int(text)
+    active_sessions[user_tg_id]["profit_target"] = target_amount
+    await state.set_state(LoginForm.main_menu)
+    await message.answer(f"✅ <b>Profit Target:</b> {target_amount} Ks", reply_markup=get_logged_in_keyboard())
+
+@dp.message(F.text == TEXT_BETSIZE)
+async def btn_set_betsize(message: types.Message, state: FSMContext):
+    user_tg_id = message.from_user.id
+    if user_tg_id not in active_sessions:
+        return await message.answer("⚠️ ကျေးဇူးပြု၍ Login ဦးစွာပြုလုပ်ပါ")
+    site = active_sessions[user_tg_id].get("site", "777BIGWIN")
+    min_bet = 100 if site == '6LOTTERY' else 10
+    await state.set_state(LoginForm.enter_bet_sequence)
+    await message.answer(
+        f"{P_1} <b>Bet Size သတ်မှတ်ပါ</b>\n\n"
+        f"🌐 <b>Site:</b> {site}\n"
+        f"⚠️ <b>Min Bet:</b> {min_bet} Kyats\n\n"
+        f"ဥပမာ: {min_bet}-{min_bet*2}-{min_bet*4}",
+        reply_markup=get_cancel_keyboard()
+    )
+
+@dp.message(LoginForm.enter_bet_sequence)
+async def process_bet_sequence(message: types.Message, state: FSMContext):
+    user_tg_id = message.from_user.id
+    text = message.text.strip()
+    if text.lower() == 'cancel':
+        await state.set_state(LoginForm.main_menu)
+        return await message.answer("❌ ဖျက်သိမ်းလိုက်ပါပြီ", reply_markup=get_logged_in_keyboard())
+    site = active_sessions.get(user_tg_id, {}).get("site", "777BIGWIN")
+    min_bet = 100 if site == '6LOTTERY' else 10
+    try:
+        sequence = [int(x.strip()) for x in text.split('-')]
+        if len(sequence) == 0 or any(x <= 0 for x in sequence) or any(x < min_bet for x in sequence):
+            raise ValueError
+        active_sessions[user_tg_id]["bet_sequence"] = sequence
+        active_sessions[user_tg_id]["current_bet_step"] = 0
+        seq_str = "-".join(map(str, sequence))
+        await state.set_state(LoginForm.main_menu)
+        await message.answer(f"✅ <b>Bet Size:</b> <code>{seq_str}</code>", reply_markup=get_logged_in_keyboard())
+    except Exception:
+        await message.answer(f"❌ မှားယွင်းနေပါသည်။ ဥပမာ: {min_bet}-{min_bet*2}-{min_bet*4}")
+
+# ==========================================================
+# 🚀 AUTO BET CORE FUNCTIONS
+# ==========================================================
+
+async def get_ai_prediction_for_bet(user_tg_id: int) -> str:
+    session = active_sessions.get(user_tg_id)
+    if not session:
+        return "BIG"
+    api_client = session.get("api_client")
+    if not api_client:
+        return "BIG"
+    try:
+        history = api_client.get_noaverage_emergd_list(type_id=30, page_size=10)
+        if not history:
+            return "BIG"
+        big_count = 0
+        small_count = 0
+        for item in history:
+            num = int(item.get('number', 0))
+            if num >= 5:
+                big_count += 1
+            else:
+                small_count += 1
+        if big_count > small_count:
+            return "BIG"
+        elif small_count > big_count:
+            return "SMALL"
+        else:
+            return "BIG"
+    except Exception as e:
+        logger.error(f"AI prediction error: {e}")
+        return "BIG"
+
+async def place_auto_bet(user_tg_id: int, bet_type: str, amount: int) -> bool:
+    session = active_sessions.get(user_tg_id)
+    if not session:
+        return False
+    api_client = session.get("api_client")
+    if not api_client:
+        return False
+    try:
+        type_id = 30
+        issue = api_client.get_game_issue(type_id)
+        if not issue:
+            logger.warning("No issue number available")
+            return False
+        last_issue = session.get("last_betted_issue")
+        if issue == last_issue:
+            logger.info(f"Already bet on issue {issue}")
+            return False
+        # BIG = 13, SMALL = 14 (both sites same)
+        select_type = 13 if bet_type.upper() == "BIG" else 14
+        result = api_client.place_bet(
+            type_id=type_id,
+            issue=issue,
+            select_type=select_type,
+            amount=amount
+        )
+        if result.get('code') == 0:
+            session["last_betted_issue"] = issue
+            session["total_bets"] = session.get("total_bets", 0) + 1
+            logger.info(f"✅ Bet placed on issue {issue} - {bet_type}")
+            return True
+        else:
+            logger.warning(f"❌ Bet failed: {result.get('msg')}")
+            return False
+    except Exception as e:
+        logger.error(f"Place bet error: {e}")
+        return False
+
+async def auto_bet_loop(user_tg_id: int, message: types.Message):
+    await message.answer(f"{P_5} Auto-Betting စတင်ပါပြီ!")
+    session = active_sessions.get(user_tg_id)
+    if not session:
+        return
+    api_client = session.get("api_client")
+    if not api_client:
+        return
+    while active_sessions.get(user_tg_id, {}).get("is_auto_betting", False):
+        try:
+            predicted_bet = await get_ai_prediction_for_bet(user_tg_id)
+            current_issue = api_client.get_game_issue(30)
+            sequence = session.get("bet_sequence", [10])
+            step = session.get("current_bet_step", 0)
+            if step >= len(sequence):
+                step = 0
+                session["current_bet_step"] = 0
+            current_amount = sequence[step]
+            min_bet = session.get("min_bet", 10)
+            if current_amount < min_bet:
+                current_amount = min_bet
+                session["bet_sequence"] = [min_bet, min_bet*2, min_bet*4, min_bet*8]
+            balance = api_client.get_balance()
+            if balance < current_amount:
+                await message.answer(f"⚠️ <b>လက်ကျန်ငွေ မလုံလောက်ပါ</b>\nလိုအပ်သောငွေ: {current_amount} Ks\n{P_2} Auto Bet ကို ရပ်လိုက်ပါပြီ")
+                session["is_auto_betting"] = False
+                break
+            betting_msg = (
+                f"<blockquote>"
+                f"{P_1} WINGO_30S : {current_issue}\n"
+                f"{P_1} AI Prediction : {predicted_bet}\n"
+                f"{P_4} Amount : {current_amount} Ks"
+                f"</blockquote>"
+            )
+            await message.answer(betting_msg)
+            success = await place_auto_bet(user_tg_id, predicted_bet, current_amount)
+            if success:
+                session["current_bet_step"] += 1
+                await asyncio.sleep(5)
+            else:
+                await asyncio.sleep(5)
+        except Exception as e:
+            logger.error(f"Auto bet loop error: {e}")
+            await asyncio.sleep(5)
+
+# ==========================================================
+# 🤖 MAIN HANDLERS (Start, Stop, Status, Balance, Logout)
+# ==========================================================
+
+@dp.message(F.text == TEXT_START)
+async def btn_start_auto(message: types.Message, state: FSMContext):
+    user_tg_id = message.from_user.id
+    if user_tg_id not in active_sessions:
+        return await message.answer("⚠️ ကျေးဇူးပြု၍ Login ဦးစွာပြုလုပ်ပါ")
+    if active_sessions[user_tg_id].get("is_auto_betting", False):
+        return await message.answer("⚠️ Auto Bet လုပ်ဆောင်နေပြီးဖြစ်ပါသည်။")
+    active_sessions[user_tg_id]["is_auto_betting"] = True
+    asyncio.create_task(auto_bet_loop(user_tg_id, message))
+
+@dp.message(F.text == TEXT_STOP)
+async def btn_stop_auto(message: types.Message, state: FSMContext):
+    user_tg_id = message.from_user.id
+    if user_tg_id not in active_sessions:
+        return await message.answer("⚠️ ကျေးဇူးပြု၍ Login ဦးစွာပြုလုပ်ပါ")
+    active_sessions[user_tg_id]["is_auto_betting"] = False
+    await message.answer(f"{P_2} <b>Auto Bet ကို ရပ်လိုက်ပါပြီ</b>")
+
+@dp.message(F.text == TEXT_STATUS)
+async def btn_status(message: types.Message, state: FSMContext):
+    user_tg_id = message.from_user.id
+    if user_tg_id not in active_sessions:
+        return await message.answer("⚠️ ကျေးဇူးပြု၍ Login ဦးစွာပြုလုပ်ပါ")
+    session = active_sessions[user_tg_id]
+    site = session.get("site", "777BIGWIN")
+    min_bet = session.get("min_bet", 10)
+    status_text = (
+        f"{P_3} <b>Bot Status</b>\n"
+        "─────────────────\n"
+        f"🌐 <b>Site:</b> {site}\n"
+        f"💰 <b>Min Bet:</b> {min_bet} Kyats\n"
+        f"{P_5} <b>Auto-Bet State:</b> {'Running 🟢' if session.get('is_auto_betting', False) else 'Stopped 🔴'}\n"
+    )
+    await message.answer(status_text)
+
+@dp.message(F.text == TEXT_BALANCE)
+async def check_balance(message: types.Message, state: FSMContext):
+    user_tg_id = message.from_user.id
+    if user_tg_id not in active_sessions:
+        return await message.answer("⚠️ ကျေးဇူးပြု၍ Login ဦးစွာပြုလုပ်ပါ")
+    api_client = active_sessions[user_tg_id].get("api_client")
+    if api_client:
+        balance = api_client.get_balance()
+        await message.answer(f"💰 <b>လက်ကျန်ငွေ:</b> {balance:.2f} Ks", reply_markup=get_logged_in_keyboard())
+    else:
+        await message.answer("❌ Balance စစ်ဆေးရန် မဖြစ်နိုင်ပါ", reply_markup=get_logged_in_keyboard())
+
+@dp.message(F.text == TEXT_LOGOUT)
+async def logout(message: types.Message, state: FSMContext):
+    user_tg_id = message.from_user.id
+    if user_tg_id in active_sessions:
+        active_sessions[user_tg_id]["is_auto_betting"] = False
+        api_client = active_sessions[user_tg_id].get("api_client")
+        if api_client:
+            try:
+                await api_client.close()
+            except Exception:
+                pass
+        del active_sessions[user_tg_id]
+    await state.clear()
+    await message.answer(f"{P_2} 👋 အကောင့်မှ ထွက်လိုက်ပါပြီ", reply_markup=get_main_keyboard())
+
+@dp.message(F.text == TEXT_INFO)
+async def show_info(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    site_name = active_sessions.get(message.from_user.id, {}).get("site", "Unknown")
+    expire_iso = await get_user_subscription(message.from_user.id)
+    expire_str = datetime.fromisoformat(expire_iso).strftime('%Y-%m-%d %I:%M %p') if expire_iso else "N/A"
+    info_text = (
+        f"{P_3} <b>User Information</b>\n"
+        f"├─ 🌐 <b>Site:</b> {site_name}\n"
+        f"├─ 🆔 <b>User ID:</b> {data.get('user_id', 'N/A')}\n"
+        f"├─ 📱 <b>Username:</b> {data.get('username', 'N/A')}\n"
+        f"├─ 💰 <b>Balance:</b> {data.get('balance', '0')}\n"
+        f"└─ 🔑 <b>Expire:</b> {expire_str}\n"
+    )
+    await message.answer(info_text, reply_markup=get_logged_in_keyboard())
+
+@dp.message(F.text == TEXT_PREDICT)
+async def btn_ai_prediction_toggle(message: types.Message):
+    user_tg_id = message.from_user.id
+    if user_tg_id not in active_sessions:
+        return await message.answer("⚠️ ကျေးဇူးပြု၍ Login ဦးစွာပြုလုပ်ပါ")
+    is_enabled = active_sessions[user_tg_id].get("is_ai_prediction_enabled", False)
+    await message.answer(
+        f"{P_1} <b>AI Prediction</b>",
+        reply_markup=get_ai_prediction_toggle_keyboard(is_enabled)
+    )
+
+@dp.callback_query(F.data == "toggle_aipred")
+async def process_toggle_aipred(callback: types.CallbackQuery):
+    user_tg_id = callback.from_user.id
+    if user_tg_id not in active_sessions:
+        return await callback.answer("⚠️ Session Expired.", show_alert=True)
+    current_state = active_sessions[user_tg_id].get("is_ai_prediction_enabled", False)
+    new_state = not current_state
+    active_sessions[user_tg_id]["is_ai_prediction_enabled"] = new_state
+    await callback.message.edit_reply_markup(reply_markup=get_ai_prediction_toggle_keyboard(new_state))
+    await callback.answer("✅ Enabled" if new_state else "❌ Disabled")
+
+# ==========================================================
+# 🚀 MAIN
+# ==========================================================
+
+async def main():
+    init_db()
+    logger.info("🚀 Auto-Bot API Version စတင်နေပါပြီ...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot ကို ရပ်လိုက်ပါပြီ")
+    except Exception as e:
+        logger.error(f"❌ Fatal error: {e}")
+        sys.exit(1)
