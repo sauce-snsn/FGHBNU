@@ -1474,30 +1474,37 @@ async def games(message: types.Message):
     )
 
 # ==========================================================
-# 🚀 MAIN BOT LOOP - FIXED FOR RENDER
+# 🚀 MAIN BOT LOOP - FINAL FIX
 # ==========================================================
 
-async def main():
-    """Main async function"""
+async def start_bot():
+    """Start the bot"""
     logger.info("🚀 Auto-Bot API Version စတင်နေပါပြီ...")
     
-    try:
-        # Delete webhook to avoid conflicts
-        await bot.delete_webhook(drop_pending_updates=True)
-        
-        # Start polling
-        await dp.start_polling(bot)
-        
-    except Exception as e:
-        logger.error(f"❌ Bot error: {e}")
-        raise
+    # Delete webhook to avoid conflicts
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Start polling
+    await dp.start_polling(bot)
 
-if __name__ == '__main__':
+
+def run_bot():
+    """Run bot with proper loop handling"""
     try:
-        # Use asyncio.run() which handles loop creation properly
-        asyncio.run(main())
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        loop.run_until_complete(start_bot())
+        loop.run_forever()
     except KeyboardInterrupt:
         logger.info("Bot ကို ရပ်လိုက်ပါပြီ")
-    except Exception as e:
-        logger.error(f"❌ Fatal error: {e}")
-        sys.exit(1)
+    finally:
+        try:
+            loop.close()
+        except:
+            pass
+
+if __name__ == '__main__':
+    run_bot()
