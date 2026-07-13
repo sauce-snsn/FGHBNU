@@ -43,6 +43,26 @@ async def update_user_ai_mode(user_id: int, ai_mode: str):
         upsert=True
     )
 
+# ==========================================
+# 🎮 Allowed Game UIDs (Key မလိုဘဲ သုံးခွင့်ပေးမည့်စာရင်း)
+# ==========================================
+allowed_uids_collection = db["allowed_uids"]
+
+async def add_allowed_uid(uid: str):
+    """UID ကို ခွင့်ပြုစာရင်းထဲ ထည့်ရန်"""
+    await allowed_uids_collection.update_one({"uid": uid}, {"$set": {"uid": uid}}, upsert=True)
+
+async def remove_allowed_uid(uid: str):
+    """UID ကို ခွင့်ပြုစာရင်းမှ ပယ်ဖျက်ရန်"""
+    await allowed_uids_collection.delete_one({"uid": uid})
+
+async def is_uid_allowed(uid: str) -> bool:
+    """UID သည် ခွင့်ပြုစာရင်းထဲတွင် ပါ/မပါ စစ်ဆေးရန်"""
+    doc = await allowed_uids_collection.find_one({"uid": uid})
+    return bool(doc)
+
+
+
 async def update_user_balance(user_id: int, balance: str):
     """User ၏ Balance ကို Update လုပ်ရန်"""
     await users_collection.update_one(
@@ -82,18 +102,3 @@ async def get_user_subscription(user_id: int):
     return None
 
 
-
-async def save_custom_pattern(user_id: int, pattern: str):
-    """User သတ်မှတ်ထားသော Custom Pattern ကို သိမ်းဆည်းရန်"""
-    await users_collection.update_one(
-        {"_id": user_id},
-        {"$set": {"custom_pattern": pattern}},
-        upsert=True
-    )
-
-async def get_custom_pattern(user_id: int):
-    """User ၏ Custom Pattern ကို ဆွဲယူရန်"""
-    user = await users_collection.find_one({"_id": user_id})
-    if user and "custom_pattern" in user:
-        return user["custom_pattern"]
-    return "B" # မရှိပါက Default အနေဖြင့် "B" ကို သုံးပါမည်
