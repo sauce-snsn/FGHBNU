@@ -55,17 +55,15 @@ class SignatureGenerator:
 class APIClient:
     """API client with auto-signature and rate limiting"""
     
-    # Site configurations
+    # Site configurations - ONLY API URLs, no login URLs needed!
     SITES = {
         '777BIGWIN': {
             'base_url': 'https://api.bigwinqaz.com/api/webapi',
             'site_name': '777BIGWIN',
-            'login_url': 'https://www.777bigwingame.app/#/login',
         },
         '6LOTTERY': {
             'base_url': 'https://6lotteryapi.com/api/webapi',
             'site_name': '6LOTTERY',
-            'login_url': 'https://www.6win584.com/#/login',
         }
     }
     
@@ -179,11 +177,11 @@ class APIClient:
             await self._aio_session.close()
     
     # ============================================================
-    # LOGIN
+    # LOGIN - API Only! No browser needed!
     # ============================================================
     
     def login(self, username: str, password: str, device_id: str = None) -> Dict[str, Any]:
-        """Login to the platform"""
+        """Login to the platform via API - NO BROWSER NEEDED!"""
         if device_id is None:
             device_id = '51ed4ee0f338a1bb24063ffdfcd31ce6'
         
@@ -203,7 +201,7 @@ class APIClient:
         return self._post('Login', data)
     
     async def alogin(self, username: str, password: str, device_id: str = None) -> Dict[str, Any]:
-        """Async login"""
+        """Async login via API"""
         if device_id is None:
             device_id = '51ed4ee0f338a1bb24063ffdfcd31ce6'
         
