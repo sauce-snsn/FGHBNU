@@ -791,6 +791,67 @@ async def get_ai_prediction_for_bet(user_tg_id: int) -> tuple:
         logger.error(f"AI prediction error: {e}")
         return "BIG", 50.0, ai_mode_name
 
+
+async def check_bet_result(user_tg_id: int, issue: str, bet_type: str, amount: int) -> tuple:
+    """Check bet result - SIMPLE AND CLEAR"""
+    session = active_sessions.get(user_tg_id)
+    if not session:
+        return None
+    
+    api_client = session.get("api_client")
+    if not api_client:
+        return None
+    
+    try:
+        # Get history
+        win_result = api_client.get_noaverage_emergd_list(type_id=30, page_size=20)
+        
+        if win_result:
+            for item in win_result:
+                if str(item.get('issueNumber', '')) == str(issue):
+                    # Get the result number
+                    num = item.get('number')
+                    if num is None:
+                        num = item.get('resultNumber')
+                    if num is None:
+                        num = item.get('winNumber')
+                    
+                    if num is not None:
+                        num = int(num)
+                        
+                        # 👇 THIS IS THE KEY LOGIC
+                        if num >= 5:
+                            actual_result = "BIG"
+                        else:
+                            actual_result = "SMALL"
+                        
+                        # 👇 COMPARE: Did we bet correctly?
+                        if actual_result == bet_type.upper():
+                            # WE WON! 🎉
+                            result_status = "WIN 🟢"
+                            win_amount = amount * 0.96
+                            session["wins"] = session.get("wins", 0) + 1
+                            session["session_profit"] = session.get("session_profit", 0) + win_amount
+                        else:
+                            # WE LOSE! 😢
+                            result_status = "LOSE 🔴"
+                            session["losses"] = session.get("losses", 0) + 1
+                            session["session_profit"] = session.get("session_profit", 0) - amount
+                        
+                        logger.info(f"✅ Bet: {bet_type} | Result: {num} → {actual_result} → {result_status}")
+                        return result_status, win_amount, actual_result, num
+                    else:
+                        logger.warning(f"⚠️ No number found for issue {issue}")
+                        return None
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Check result error: {e}")
+        return None
+
+
+
 async def place_auto_bet(user_tg_id: int, bet_type: str, amount: int) -> tuple:
     """Place bet and return (success, result, win_amount)"""
     session = active_sessions.get(user_tg_id)
@@ -808,13 +869,12 @@ async def place_auto_bet(user_tg_id: int, bet_type: str, amount: int) -> tuple:
             logger.warning("No issue number available")
             return False, None, 0
         
-        # ← FIX: ဒီမှာ စစ်ပါ
         last_issue = session.get("last_betted_issue")
         if issue == last_issue:
             logger.info(f"Already bet on issue {issue}")
             return False, None, 0
         
-        # BIG = 13, SMALL = 14 (both sites same)
+        # BIG = 13, SMALL = 14
         select_type = 13 if bet_type.upper() == "BIG" else 14
         
         result = api_client.place_bet(
@@ -825,40 +885,11 @@ async def place_auto_bet(user_tg_id: int, bet_type: str, amount: int) -> tuple:
         )
         
         if result.get('code') == 0:
-            # ← FIX: ဒီမှာ သိမ်းပါ
             session["last_betted_issue"] = issue
             session["total_bets"] = session.get("total_bets", 0) + 1
             
-            # Get result after bet
-            win_amount = 0
-            result_status = "PENDING"
-            
-            # Wait for result and check
-            await asyncio.sleep(5)
-            
-            # Get win result
-            win_result = api_client.get_noaverage_emergd_list(type_id=30, page_size=5)
-            for item in win_result:
-                if str(item.get('issueNumber')) == str(issue):
-                    num = int(item.get('number', 0))
-                    if num >= 5:
-                        actual = "BIG"
-                    else:
-                        actual = "SMALL"
-                    
-                    if actual == bet_type.upper():
-                        result_status = "WIN 🟢"
-                        win_amount = amount * 1.96  # Approximate win
-                        session["wins"] = session.get("wins", 0) + 1
-                        session["session_profit"] = session.get("session_profit", 0) + win_amount - amount
-                    else:
-                        result_status = "LOSE 🔴"
-                        session["losses"] = session.get("losses", 0) + 1
-                        session["session_profit"] = session.get("session_profit", 0) - amount
-                    break
-            
-            logger.info(f"✅ Bet placed on issue {issue} - {bet_type} - Result: {result_status}")
-            return True, result_status, win_amount
+            logger.info(f"✅ Bet placed on issue {issue} - {bet_type}")
+            return True, "PENDING", 0
         else:
             logger.warning(f"❌ Bet failed: {result.get('msg')}")
             return False, None, 0
@@ -868,7 +899,7 @@ async def place_auto_bet(user_tg_id: int, bet_type: str, amount: int) -> tuple:
         return False, None, 0
 
 async def auto_bet_loop(user_tg_id: int, message: types.Message):
-    """Main auto-betting loop - with Martingale Strategy"""
+    """Main auto-betting loop - FULLY FIXED"""
     await message.answer(f"{P_5} Auto-Betting စတင်ပါပြီ!")
     
     session = active_sessions.get(user_tg_id)
@@ -900,11 +931,10 @@ async def auto_bet_loop(user_tg_id: int, message: types.Message):
                 await asyncio.sleep(3)
                 continue
             
-            # 4. ✅ MARTINGALE STRATEGY - Get bet amount from sequence
+            # 4. Get bet amount from sequence
             sequence = session.get("bet_sequence", [10, 20, 40])
             step = session.get("current_bet_step", 0)
             
-            # ✅ If step exceeds sequence length, reset to 0
             if step >= len(sequence):
                 step = 0
                 session["current_bet_step"] = 0
@@ -915,7 +945,9 @@ async def auto_bet_loop(user_tg_id: int, message: types.Message):
             min_bet = session.get("min_bet", 10)
             if current_amount < min_bet:
                 current_amount = min_bet
-                session["bet_sequence"] = [min_bet, min_bet*2, min_bet*4]
+                sequence = [min_bet, min_bet*2, min_bet*4]
+                session["bet_sequence"] = sequence
+                session["current_bet_step"] = 0
             
             # 6. Check balance
             balance = api_client.get_balance()
@@ -929,94 +961,105 @@ async def auto_bet_loop(user_tg_id: int, message: types.Message):
                 session["is_auto_betting"] = False
                 break
             
-            # 7. Show betting message
+            # 7. 📝 Show betting message
             betting_msg = (
-                f"<blockquote>"
-                f"{P_1} WINGO_30S : {current_issue}\n"
-                f"{P_1} AI Mode : {ai_mode}\n"
-                f"{P_1} Prediction : <b>{predicted_bet}</b> ({confidence:.1f}%)\n"
-                f"{P_4} Amount : {current_amount} Ks (Step {step+1}/{len(sequence)})"
-                f"</blockquote>"
+                f"<b>WINGO_30S : {current_issue}</b>\n"
+                f"<b>Series : Ai Prediction</b>\n"
+                f"<b>Pred : {predicted_bet.upper()} | {current_amount} Ks</b>\n"
+                f"<b>Step : {step+1}/{len(sequence)}</b>"
             )
             await message.answer(betting_msg)
             
             # 8. Place bet
-            success, result_status, win_amount = await place_auto_bet(user_tg_id, predicted_bet, current_amount)
+            success, _, _ = await place_auto_bet(user_tg_id, predicted_bet, current_amount)
             
             if success:
                 last_betted_issue = current_issue
                 
-                # 9. Show result and update step
-                if result_status == "WIN 🟢":
-                    result_msg = (
-                        f"<blockquote>"
-                        f"✅ <b>WIN!</b> 🤑 +{win_amount:.2f} Ks\n"
-                        f"─────────────────\n"
-                        f"{P_3} Issue : {current_issue}\n"
-                        f"{P_3} Bet : {predicted_bet}\n"
-                        f"{P_2} Amount : {current_amount} Ks\n"
-                        f"─────────────────\n"
-                        f"🔄 <b>Next Bet:</b> {sequence[0]} Ks (Reset to first)"
-                        f"</blockquote>"
-                    )
-                    # ✅ WIN = Reset to first step (10 Ks)
-                    session["current_bet_step"] = 0
-                    consecutive_failures = 0
+                # 9. Wait for result (8 seconds)
+                await asyncio.sleep(8)
+                
+                # 10. Check result
+                result_data = await check_bet_result(user_tg_id, current_issue, predicted_bet, current_amount)
+                
+                if result_data:
+                    result_status, win_amount, actual_result, actual_number = result_data
                     
-                elif result_status == "LOSE 🔴":
-                    # Calculate next step
-                    next_step = step + 1
-                    if next_step >= len(sequence):
-                        next_amount = sequence[0]  # Reset to first
-                        next_step = 0
+                    # Get current balance and profit
+                    new_balance = api_client.get_balance()
+                    current_profit = session.get("session_profit", 0.0)
+                    
+                    # Update balance in DB
+                    await update_user_balance(user_tg_id, str(new_balance))
+                    
+                    if result_status == "WIN 🟢":
+                        profit_display = f"+{current_profit:.2f} Ks"
+                        
+                        result_msg = (
+                            f"<b>✅ WIN 🏁 +{win_amount:.2f} Ks</b>\n\n"
+                            f"<b>WINGO_30S : {current_issue}</b>\n"
+                            f"<b>Result : {actual_number} | {actual_result}</b>\n"
+                            f"<b>Balance : K{new_balance:,.2f}</b>\n"
+                            f"<b>Total Profit : {profit_display}</b>"
+                        )
+                        
+                        # WIN = Reset to first step
+                        session["current_bet_step"] = 0
+                        logger.info(f"🔄 WIN! Reset to step 1")
+                        
+                    elif result_status == "LOSE 🔴":
+                        profit_display = f"{current_profit:.2f} Ks"
+                        
+                        # LOSE = Move to next step
+                        next_step = step + 1
+                        
+                        # If next step is out of range, reset to first
+                        if next_step >= len(sequence):
+                            next_step = 0
+                            next_amount = sequence[0]
+                        else:
+                            next_amount = sequence[next_step]
+                        
+                        session["current_bet_step"] = next_step
+                        
+                        result_msg = (
+                            f"<b>❌ LOSE 🏁 {current_amount:.2f} Ks</b>\n\n"
+                            f"<b>WINGO_30S : {current_issue}</b>\n"
+                            f"<b>Result : {actual_number} | {actual_result}</b>\n"
+                            f"<b>Balance : K{new_balance:,.2f}</b>\n"
+                            f"<b>Total Profit : {profit_display}</b>\n"
+                            f"<b>Next Bet : {next_amount} Ks (Step {next_step+1}/{len(sequence)})</b>"
+                        )
+                        logger.info(f"🔄 LOSE! Next step: {next_step+1}, amount: {next_amount}")
+                    
                     else:
-                        next_amount = sequence[next_step]
+                        result_msg = (
+                            f"<b>⏳ PENDING</b>\n\n"
+                            f"<b>WINGO_30S : {current_issue}</b>\n"
+                            f"<b>Status : Waiting for result...</b>"
+                        )
                     
-                    result_msg = (
-                        f"<blockquote>"
-                        f"❌ <b>LOSE</b> 💸 {current_amount:.2f} Ks\n"
-                        f"─────────────────\n"
-                        f"{P_3} Issue : {current_issue}\n"
-                        f"{P_3} Bet : {predicted_bet}\n"
-                        f"{P_2} Amount : {current_amount} Ks\n"
-                        f"─────────────────\n"
-                        f"🔄 <b>Next Bet:</b> {next_amount} Ks (Step {next_step+1}/{len(sequence)})"
-                        f"</blockquote>"
-                    )
-                    # ✅ LOSE = Move to next step
-                    session["current_bet_step"] = next_step
-                    consecutive_failures = 0
+                    await message.answer(result_msg)
                     
+                    # Check profit target
+                    profit_target = session.get("profit_target", 0)
+                    if profit_target > 0 and current_profit >= profit_target:
+                        await message.answer(
+                            f"🎉 <b>Target ပြည့်သွားပါပြီ!</b>\n"
+                            f"Profit: {current_profit:.2f} Ks\n"
+                            f"Target: {profit_target} Ks"
+                        )
+                        session["is_auto_betting"] = False
+                        break
+                    
+                    await asyncio.sleep(INTERVAL_SECONDS)
                 else:
-                    result_msg = (
-                        f"<blockquote>"
-                        f"⏳ <b>PENDING</b>\n"
-                        f"─────────────────\n"
-                        f"{P_3} Issue : {current_issue}"
-                        f"</blockquote>"
-                    )
-                    # ✅ PENDING = Keep same step
-                    consecutive_failures = 0
-                
-                await message.answer(result_msg)
-                
-                # Update balance in DB
-                new_balance = api_client.get_balance()
-                await update_user_balance(user_tg_id, str(new_balance))
-                
-                # Check profit target
-                current_profit = session.get("session_profit", 0.0)
-                profit_target = session.get("profit_target", 0)
-                if profit_target > 0 and current_profit >= profit_target:
                     await message.answer(
-                        f"🎉 <b>Target ပြည့်သွားပါပြီ!</b>\n"
-                        f"Profit: {current_profit:.2f} Ks\n"
-                        f"Target: {profit_target} Ks"
+                        f"<b>⏳ PENDING</b>\n\n"
+                        f"<b>WINGO_30S : {current_issue}</b>\n"
+                        f"<b>Status : No result yet...</b>"
                     )
-                    session["is_auto_betting"] = False
-                    break
-                
-                await asyncio.sleep(INTERVAL_SECONDS)
+                    await asyncio.sleep(5)
                 
             else:
                 consecutive_failures += 1
