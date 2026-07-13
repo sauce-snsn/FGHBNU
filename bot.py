@@ -691,41 +691,6 @@ async def process_password(message: types.Message, state: FSMContext):
             "token": token
         }
 
-
-
-
-
-# After successful login, before creating session
-# Set default bet sequence based on site
-
-
-
-active_sessions[user_tg_id] = {
-    "site": site_name,
-    "api_client": api_client,
-    "is_auto_betting": False,
-    "ai_mode": ai_mode,
-      # <-- Changed
-    "current_bet_step": 0,
-    "profit_target": 0,
-    "start_balance": float(balance) if balance else 0.0,
-    "session_profit": 0.0,
-    "hit_wait": 0,
-    "current_misses": 0,
-    "is_ai_prediction_enabled": False,
-    "last_predicted_issue": None,
-    "current_win_streak": 0,
-    "current_lose_streak": 0,
-    "longest_win_streak": 0,
-    "longest_lose_streak": 0,
-    "last_betted_issue": None,
-    "token": token
-}
-
-
-
-
-
         await loading_msg.delete()
 
         # 9. Show success message
