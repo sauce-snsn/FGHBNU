@@ -663,18 +663,13 @@ async def process_password(message: types.Message, state: FSMContext):
             login_time=site_login_time,
             token=token
         )
-        
-        if site_name == '6LOTTERY':
-            default_sequence = [100, 200, 400, 800]
-        else:
-            default_sequence = [10, 20, 40, 80]    
-        
+
         active_sessions[user_tg_id] = {
             "site": site_name,
             "api_client": api_client,
             "is_auto_betting": False,
             "ai_mode": ai_mode,
-            "bet_sequence": default_sequence,
+            "bet_sequence": [10],
             "current_bet_step": 0,
             "profit_target": 0,
             "start_balance": float(balance) if balance else 0.0,
@@ -950,22 +945,37 @@ async def place_auto_bet_api(user_tg_id: int, bet_type: str, amount: int = 10) -
         return False
 
     try:
+        # 1. Get current issue
         type_id = 30
         issue = api_client.get_game_issue(type_id)
         if not issue:
             logger.warning("No issue number available")
             return False
 
+        # 2. Check if already bet on this issue
         last_issue = session.get("last_betted_issue")
         if issue == last_issue:
             logger.info(f"Already bet on issue {issue}, waiting for next...")
             return False
 
-        # Use the new place_bet method with bet_type
+        # 3. Convert bet type
+        select_type = 13  # Default
+        if bet_type.lower() == "big":
+            select_type = 1
+        elif bet_type.lower() == "small":
+            select_type = 2
+        elif bet_type.lower() == "red":
+            select_type = 3
+        elif bet_type.lower() == "green":
+            select_type = 4
+        elif bet_type.lower() in ["violet", "purple"]:
+            select_type = 5
+
+        # 4. Place bet
         result = api_client.place_bet(
             type_id=type_id,
             issue=issue,
-            bet_type=bet_type,
+            select_type=select_type,
             amount=amount
         )
 
@@ -1257,22 +1267,16 @@ async def btn_set_betsize(message: types.Message, state: FSMContext):
     if user_tg_id not in active_sessions:
         return await message.answer("⚠️ ကျေးဇူးပြု၍ Login ဦးစွာပြုလုပ်ပါ")
 
-    site = active_sessions[user_tg_id].get("site", "777BIGWIN")
-    min_bet = 100 if site == '6LOTTERY' else 10
-    
-    current_seq = active_sessions[user_tg_id].get("bet_sequence", [min_bet])
+    current_seq = active_sessions[user_tg_id].get("bet_sequence", [10])
     seq_str = "-".join(map(str, current_seq))
 
     await state.set_state(LoginForm.enter_bet_sequence)
     await message.answer(
         f"{P_1} <b>Auto Bet လောင်းကြေးပမာဏ (Bet Size) ကို သတ်မှတ်ပါ</b>\n\n"
-        f"🌐 <b>Site:</b> {site}\n"
-        f"⚠️ <b>အနိမ့်ဆုံးလောင်းကြေး:</b> {min_bet} Kyats\n\n"
         f"လက်ရှိ သတ်မှတ်ထားသော ပုံစံ: <code>{seq_str}</code>\n\n"
-        f"<b>Format:</b> {min_bet}-{min_bet*2}-{min_bet*4} (သို့) 10-20-40-80\n"
-        f"• <b>{site}</b> အတွက် အနိမ့်ဆုံး: {min_bet} Kyats\n"
-        f"• ဂဏန်းများကို '-' ခြားပြီး ရိုက်ထည့်ပါ\n"
-        f"• ဖျက်လိုပါက 'Cancel' ဟုရိုက်ပါ",
+        f"<b>Format:</b> 10-20-40-80 (သို့) 100-200-400\n"
+        f"ဂဏန်းများကို '-' ခြားပြီး ရိုက်ထည့်ပါ\n"
+        f"ဖျက်လိုပါက 'Cancel' ဟုရိုက်ပါ",
         reply_markup=get_cancel_keyboard()
     )
 
@@ -1280,33 +1284,19 @@ async def btn_set_betsize(message: types.Message, state: FSMContext):
 async def process_bet_sequence(message: types.Message, state: FSMContext):
     user_tg_id = message.from_user.id
     text = message.text.strip()
-    
+
     if text.lower() == 'cancel':
         await state.set_state(LoginForm.main_menu)
         return await message.answer("❌ ဖျက်သိမ်းလိုက်ပါပြီ", reply_markup=get_logged_in_keyboard())
-    
-    site = active_sessions.get(user_tg_id, {}).get("site", "777BIGWIN")
-    min_bet = 100 if site == '6LOTTERY' else 10
-    
+
     try:
         sequence = [int(x.strip()) for x in text.split('-')]
         if len(sequence) == 0 or any(x <= 0 for x in sequence):
             raise ValueError
-        
-        # Check minimum bet
-        invalid_bets = [str(x) for x in sequence if x < min_bet]
-        if invalid_bets:
-            await message.answer(
-                f"❌ <b>{site}</b> အတွက် အနိမ့်ဆုံး {min_bet} Kyats ထက် မနည်းရပါ။\n"
-                f"မှားယွင်းနေသော ပမာဏများ: {', '.join(invalid_bets)}\n\n"
-                f"ကျေးဇူးပြု၍ ပြန်လည်သတ်မှတ်ပါ။\n"
-                f"ဥပမာ: {min_bet}-{min_bet*2}-{min_bet*4}"
-            )
-            return
-        
+
         active_sessions[user_tg_id]["bet_sequence"] = sequence
         active_sessions[user_tg_id]["current_bet_step"] = 0
-        
+
         seq_str = "-".join(map(str, sequence))
         await state.set_state(LoginForm.main_menu)
         await message.answer(
@@ -1314,10 +1304,7 @@ async def process_bet_sequence(message: types.Message, state: FSMContext):
             reply_markup=get_logged_in_keyboard()
         )
     except Exception:
-        await message.answer(
-            f"❌ မှားယွင်းနေပါသည်။\n"
-            f"ဥပမာ: {min_bet}-{min_bet*2}-{min_bet*4} ဟု ဂဏန်းများကို '-' ခြားပြီး ရိုက်ထည့်ပါ"
-        )
+        await message.answer("❌ မှားယွင်းနေပါသည်။ ဥပမာ: 10-20-40-80 ဟု ဂဏန်းများကို '-' ခြားပြီး ရိုက်ထည့်ပါ")
 
 # ==========================================================
 # 🤖 REPLY KEYBOARD AUTO BET & STATUS HANDLERS
@@ -1362,9 +1349,6 @@ async def btn_status(message: types.Message, state: FSMContext):
         return await message.answer("⚠️ ကျေးဇူးပြု၍ Login ဦးစွာပြုလုပ်ပါ")
 
     session = active_sessions[user_tg_id]
-    site = session.get("site", "777BIGWIN")
-    min_bet = 100 if site == '6LOTTERY' else 10
-    
     api_client = session.get("api_client")
 
     if session.get("is_auto_betting", False):
@@ -1375,7 +1359,7 @@ async def btn_status(message: types.Message, state: FSMContext):
     ai_mode = session.get("ai_mode", "Pattern AI")
     site_name = session.get("site", "777BIGWIN")
 
-    current_seq = session.get("bet_sequence", [min_bet])
+    current_seq = session.get("bet_sequence", [10])
     seq_str = "-".join(map(str, current_seq))
     current_step = session.get("current_bet_step", 0)
 
@@ -1395,7 +1379,6 @@ async def btn_status(message: types.Message, state: FSMContext):
         f"{P_3} <b>Bot Status</b>\n"
         "─────────────────\n"
         f"🌐 <b>Active Site:</b> {site_name}\n"
-        f"⚠️ <b>Min Bet:</b> {min_bet} Kyats\n"
         f"{P_5} <b>Auto-Bet State:</b> {is_auto}\n"
         f"{P_1} <b>Active AI Mode:</b> {ai_mode}\n"
         f"{P_2} <b>Current Balance:</b> {current_balance:.2f} Ks\n"
