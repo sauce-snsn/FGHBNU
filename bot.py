@@ -912,14 +912,14 @@ async def auto_bet_loop(user_tg_id, message: types.Message):
                             
                             if predicted_bet.lower() == actual_size:
                                 profit_amount = current_amount * 0.96
-                                status_title = f"{E_SETTING} <b>WIN</b> {E_LOSS} +{profit_amount:.2f} Ks"
+                                status_title = f"{E_SETTING} <b>WIN</b> {E_CROWN} +{profit_amount:.2f} Ks"
                                 active_sessions[user_tg_id]["session_profit"] += profit_amount
                                 active_sessions[user_tg_id]["current_bet_step"] = 0 
                                 active_sessions[user_tg_id]["current_misses"] = 0 
                             elif actual_size == "?": 
                                 status_title = f"⚙️ <b>DRAW</b> (Pending)"
                             else:
-                                status_title = f"⚙️ <b>LOSE</b> 💸 {current_amount:.2f} Ks"
+                                status_title = f"{E_SETTING} <b>LOSE</b> {E_LOSS} {current_amount:.2f} Ks"
                                 active_sessions[user_tg_id]["session_profit"] -= current_amount
                                 active_sessions[user_tg_id]["current_bet_step"] = (step + 1) % len(sequence)
                                 
