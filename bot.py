@@ -1,3 +1,4 @@
+# a.py
 import asyncio
 import os
 import html
@@ -28,6 +29,51 @@ from aiogram.types import (
 import database as db 
 import ai_engines
 from ai_engines import AI_MODES, AI_MODE_EMOJIS
+from aiogram.types import ForceReply
+
+
+# State ကြေညာခြင်း
+class PatternState(StatesGroup):
+    waiting_for_pattern = State()
+
+# 1. Custom Pattern Button ကို နှိပ်လိုက်သည့်အခါ
+@dp.message(F.text == TEXT_CUSTOM_PATTERN)
+async def prompt_custom_pattern(message: types.Message, state: FSMContext):
+    # ForceReply ဖြင့် Keyboard ကို တန်းပွင့်စေခြင်း
+    await message.answer(
+        "သင်အသုံးပြုလိုသော Pattern ကို ရိုက်ထည့်ပါ။\n(ဥပမာ - BBSSBSBS)",
+        reply_markup=ForceReply(selective=True) 
+    )
+    await state.set_state(PatternState.waiting_for_pattern)
+
+# 2. User မှ BBSSBSBS စသည်ဖြင့် ရိုက်ထည့်လိုက်သည့်အခါ
+@dp.message(PatternState.waiting_for_pattern)
+async def process_custom_pattern(message: types.Message, state: FSMContext):
+    pattern = message.text.upper().replace(" ", "")
+    
+    # Validation စစ်ဆေးခြင်း
+    if not all(c in ['B', 'S'] for c in pattern):
+        await message.answer("စာလုံးအမှားပါဝင်နေပါသည်။ 'B' နှင့် 'S' ကိုသာ အသုံးပြုပါ။\n(ဥပမာ - BBSSBSBS)")
+        return
+        
+    user_id = message.from_user.id
+    
+    # DB တွင် သိမ်းဆည်းခြင်း
+    await db.save_custom_pattern(user_id, pattern)
+    await db.update_user_ai_mode(user_id, "custom_pattern")
+    
+    await state.clear()
+    
+    # အောင်မြင်ကြောင်း ပြန်လည်အကြောင်းကြားခြင်း
+    await message.answer(
+        f"✅ သင့်စိတ်ကြိုက် Pattern {pattern} အား အောင်မြင်စွာ မှတ်သားထားပါပြီ။"
+        # ဤနေရာတွင် မူလ Keyboard ပြန်ပေါ်စေရန် အစ်ကို့ရဲ့ main_keyboard() ကို reply_markup အနေဖြင့် ပြန်ခေါ်ပေးနိုင်ပါတယ်။
+    )
+
+
+
+
+
 
 # ==========================================================
 # ⚙️ Configuration
@@ -132,6 +178,14 @@ E_PREDICT = KeyboardButton(text=TEXT_PREDICT, icon_custom_emoji_id="589099776333
 E_LOGOUT = KeyboardButton(text=TEXT_LOGOUT, icon_custom_emoji_id="5875180111744995604", style="danger")
 E_LOGIN = KeyboardButton(text=TEXT_LOGIN, icon_custom_emoji_id="5884041323843955199", style="primary")
 E_BACK = KeyboardButton(text=TEXT_BACK, icon_custom_emoji_id="5848119413041431362", style="primary")
+TEXT_CUSTOM_PATTERN = "Set Pattern" 
+
+E_CUSTOM_PATTERN = KeyboardButton(
+    text=TEXT_CUSTOM_PATTERN, 
+    icon_custom_emoji_id="5877443460725739250", # 📝 Custom Emoji ID
+    style="primary" # Color Style
+)
+
 
 P_1 = '<tg-emoji emoji-id="5890997763331591703">⚙️</tg-emoji>'
 P_2 = '<tg-emoji emoji-id="5875180111744995604">⚙️</tg-emoji>'
