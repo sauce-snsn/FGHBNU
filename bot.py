@@ -41,7 +41,10 @@ from ai_engines import AI_MODES, AI_MODE_EMOJIS
 load_dotenv()
 
 logging.basicConfig(
-    level=getattr(logging, Config.LOG_LEVEL),
+    LOG_LEVEL = getattr(logging, Config.LOG_LEVEL, logging.INFO)  # 👈 FIX
+
+logging.basicConfig(
+    level=LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
