@@ -40,10 +40,10 @@ from ai_engines import AI_MODES, AI_MODE_EMOJIS
 # ==========================================================
 load_dotenv()
 
-logging.basicConfig(
-    LOG_LEVEL = getattr(logging, Config.LOG_LEVEL, logging.INFO)  # 👈 FIX
+LOG_LEVEL_NAME = os.getenv('LOG_LEVEL', 'INFO').upper()
+LOG_LEVEL = getattr(logging, LOG_LEVEL_NAME, logging.INFO)
 
-logging.basicConfig(
+logging.basicConfig(  # <-- This MUST be at the TOP LEVEL, no indent!
     level=LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
