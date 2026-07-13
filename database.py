@@ -2,11 +2,14 @@
 # -*- coding: utf-8 -*-
 
 import os
+import logging
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 from typing import Optional, Dict, Any, List
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # MongoDB Connection String
 MONGO_URI = os.getenv("MONGO_URI", "")
@@ -19,6 +22,19 @@ db = client["autobet_db"]
 users_collection = db["users"]
 keys_collection = db["keys"]
 bet_history_collection = db["bet_history"]
+
+
+def init_db():
+    """Initialize database connection (MongoDB doesn't need setup)"""
+    try:
+        # Test connection
+        client.admin.command('ping')
+        logger.info("✅ MongoDB connection verified")
+        return True
+    except Exception as e:
+        logger.error(f"❌ MongoDB connection failed: {e}")
+        return False
+
 
 # ==========================================
 # 👤 User Data Functions
@@ -61,6 +77,7 @@ async def update_user_balance(user_id: int, balance: str):
         upsert=True
     )
 
+
 # ==========================================
 # 🔑 Auth & Subscription Functions
 # ==========================================
@@ -70,7 +87,7 @@ async def create_key(key_str: str, duration: str):
     await keys_collection.insert_one({
         "key": key_str, 
         "duration": duration,
-        "created_at": None  # Will be set by MongoDB
+        "created_at": None
     })
 
 async def get_key(key_str: str) -> Optional[Dict]:
@@ -96,6 +113,7 @@ async def get_user_subscription(user_id: int) -> Optional[str]:
         return user["expire_date"]
     return None
 
+
 # ==========================================
 # 📊 Bet History Functions
 # ==========================================
@@ -110,13 +128,14 @@ async def save_bet_history(tg_id: int, issue: str, bet_type: str,
         "amount": amount,
         "result": result,
         "profit": profit,
-        "created_at": None  # MongoDB will add timestamp
+        "created_at": None
     })
 
 async def get_bet_history(tg_id: int, limit: int = 50) -> List[Dict]:
     """User ၏ Bet history ကို ယူရန်"""
     cursor = bet_history_collection.find({"tg_id": tg_id}).sort("_id", -1).limit(limit)
     return await cursor.to_list(length=limit)
+
 
 # ==========================================
 # 🧹 Cleanup Functions
@@ -134,5 +153,3 @@ async def get_all_users() -> List[Dict]:
     """User အားလုံးကိုယူရန်"""
     cursor = users_collection.find({})
     return await cursor.to_list(length=None)
-
-print("✅ MongoDB Database connected successfully!")
