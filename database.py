@@ -61,8 +61,6 @@ async def is_uid_allowed(uid: str) -> bool:
     doc = await allowed_uids_collection.find_one({"uid": uid})
     return bool(doc)
 
-
-
 async def update_user_balance(user_id: int, balance: str):
     """User ၏ Balance ကို Update လုပ်ရန်"""
     await users_collection.update_one(
@@ -101,4 +99,28 @@ async def get_user_subscription(user_id: int):
         return user["expire_date"]
     return None
 
+# ==========================================
+# 🧪 Virtual Mode Functions (NEW)
+# ==========================================
+async def set_virtual_balance(user_id: int, balance: float):
+    """Virtual Mode Balance ကို သိမ်းဆည်းရန်"""
+    await users_collection.update_one(
+        {"_id": user_id},
+        {"$set": {"virtual_balance": balance}},
+        upsert=True
+    )
 
+async def get_virtual_balance(user_id: int) -> float:
+    """Virtual Mode Balance ကို ယူရန်"""
+    user = await get_user(user_id)
+    if user and "virtual_balance" in user:
+        return user["virtual_balance"]
+    return 0.0
+
+async def update_virtual_balance(user_id: int, balance: float):
+    """Virtual Mode Balance ကို Update လုပ်ရန်"""
+    await users_collection.update_one(
+        {"_id": user_id},
+        {"$set": {"virtual_balance": balance}},
+        upsert=True
+    )
