@@ -60,7 +60,6 @@ SITE_CONFIGS = {
     }
 }
 
-
 def get_signed_payload(payload: dict) -> dict:
     """Frontend ၏ Signature တွက်ချက်မှု Logic အတိအကျ"""
     t = {k: v for k, v in payload.items() if k not in ['signature', 'timestamp']}
@@ -194,7 +193,7 @@ class AuthMiddleware(BaseMiddleware):
             whitelisted = await db.db["whitelist"].find_one({"uid": str(user_id)})
             if whitelisted:
                 return await handler(event, data)
-            
+                
             if isinstance(event, types.Message) and text.startswith("PSP-") and len(text) == 20:
                 return await handler(event, data)
                 
@@ -236,7 +235,6 @@ ai_engines.AI_MODES["circle_rnd"] = {
 }
 
 VALID_AI_NAMES = [m["name"] for m in ai_engines.AI_MODES.values()]
-VALID_AI_NAMES.append("🛠️ Set Pattern") # Explicitly add Custom Pattern Name
 
 # ==========================================================
 # 🗂️ FSM States
@@ -248,7 +246,7 @@ class LoginForm(StatesGroup):
     main_menu = State()
     enter_bet_sequence = State() 
     enter_profit_target = State()
-    enter_custom_pattern = State() # Custom Pattern State
+    enter_custom_pattern = State() 
 
 # ==========================================================
 # ⌨️ Keyboards
@@ -267,7 +265,6 @@ def get_site_keyboard():
         resize_keyboard=True
     )
 
-
 def get_logged_in_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -285,9 +282,6 @@ def get_ai_mode_keyboard():
     modes = list(AI_MODES.values())
     keyboard = []
     row = []
-    
-    # Custom Pattern Button
-    row.append(KeyboardButton(text="🛠️ Set Pattern", icon_custom_emoji_id="5985774024968379294", style="primary"))
     
     for mode in modes:
         mode_name = mode["name"]
@@ -362,7 +356,7 @@ async def cmd_gen_keys(message: types.Message):
         duration = parts[2].strip().upper()
         if not parse_duration(duration): raise ValueError
     except:
-        return await message.answer("⚠️ အချိန်သတ်မှတ်ချက် သို့မဟုတ် အရေအတွက် မှားနေပါသည်။ ဥပမာ: <code>.gen 5 2H</code>")
+        return await message.answer("⚠️ အချိန်သတ်မှတ်ချက် သို့မဟုတ် အရေအတွက် မှားနေပါသည်။\nဥပမာ: <code>.gen 5 2H</code>")
         
     date_prefix = get_myanmar_time().strftime("%Y%m%d")
     keys = []
@@ -385,7 +379,7 @@ async def cmd_add_uid(message: types.Message):
         
     target_id = parts[1].strip()
     await db.db["whitelist"].update_one({"uid": target_id}, {"$set": {"uid": target_id}}, upsert=True)
-    await message.answer(f"✅ Telegram UID: <code>{target_id}</code> ကို Whitelist ထဲသို့ ထည့်သွင်းပြီးပါပြီ။ (Key မလိုဘဲ သုံးနိုင်ပါသည်)")
+    await message.answer(f"✅ Telegram UID: <code>{target_id}</code> ကို Whitelist ထဲသို့ ထည့်သွင်းပြီးပါပြီ။\n(Key မလိုဘဲ သုံးနိုင်ပါသည်)")
 
 @dp.message(F.text.startswith(".del "))
 async def cmd_del_uid(message: types.Message):
@@ -512,7 +506,7 @@ async def process_password(message: types.Message, state: FSMContext):
         if api_result.get("code") == 0 or api_result.get("msg") == "success":
             user_data = api_result.get("data", {})
             token = user_data.get("token", "") if isinstance(user_data, dict) else str(user_data)
-            
+        
             user_info_res = await api_get_user_info(site_name, token)
             
             user_id = "N/A"
@@ -556,7 +550,7 @@ async def process_password(message: types.Message, state: FSMContext):
                 "hit_wait": 0,
                 "current_misses": 0,
                 "is_ai_prediction_enabled": False, 
-                "last_predicted_issue": None       
+                "last_predicted_issue": None
             }
 
             caption_text = (
@@ -660,17 +654,14 @@ async def get_ai_prediction(user_tg_id):
                 step = session_data.get("custom_pattern_step", 0)
                 target_bet = pat[step]
 
-                # ပထမဆုံးတစ်ကြိမ်သာ Trigger စစ်ဆေးမည် (custom_pattern_started = False ဖြစ်မှသာ)
-                if not active_sessions.get(user_tg_id, {}).get("custom_pattern_started", False):
+                # Pattern ရဲ့ အစ (Step 0) ဖြစ်နေလျှင် ဆန့်ကျင်ဘက် ရလဒ်ထွက်/မထွက် စစ်ဆေးခြင်း
+                if step == 0:
                     last_actual_num = int(records[0]['number'])
                     last_actual_size = "BIG" if last_actual_num >= 5 else "SMALL"
                     trigger = "SMALL" if target_bet == "BIG" else "BIG"
 
                     if last_actual_size != trigger:
                         return "wait", 100, next_issue, user_ai_name
-
-                    # Trigger တွေ့ပြီ! ဒီတစ်ခါတည်း flag ကို True သတ်မှတ်မည်
-                    active_sessions[user_tg_id]["custom_pattern_started"] = True
 
                 return target_bet.lower(), 100, next_issue, user_ai_name
             else:
@@ -806,8 +797,7 @@ async def prediction_broadcast_loop(user_tg_id, message: types.Message):
                     if actual_result != "? | ?": break
                 
                 if actual_result != "? | ?":
-                    actual_size = actual_result.split(" | ")[1].strip().lower()
-                    if predicted_bet.lower() == actual_size:
+                    if predicted_bet.lower() == actual_result.split(" | ")[1].strip().lower():
                         status_text = f"{P_5}WIN{actual_result}"
                         active_sessions[user_tg_id]["current_win_streak"] += 1
                         active_sessions[user_tg_id]["current_lose_streak"] = 0
@@ -817,15 +807,9 @@ async def prediction_broadcast_loop(user_tg_id, message: types.Message):
                         active_sessions[user_tg_id]["current_lose_streak"] += 1
                         active_sessions[user_tg_id]["current_win_streak"] = 0
                         active_sessions[user_tg_id]["longest_lose_streak"] = max(active_sessions[user_tg_id]["longest_lose_streak"], active_sessions[user_tg_id]["current_lose_streak"])
-
-                    # --- Custom Pattern Step တိုးမည် ---
-                    if ai_name == "🛠️ Set Pattern":
-                        pat = active_sessions[user_tg_id].get("custom_pattern", ["BIG"])
-                        current_c_step = active_sessions[user_tg_id].get("custom_pattern_step", 0)
-                        active_sessions[user_tg_id]["custom_pattern_step"] = (current_c_step + 1) % len(pat)
                 else:
                     status_text = "⚖️ <b>DRAW (Timeout)</b>"
-                    
+                  
                 long_w, long_l = active_sessions[user_tg_id]["longest_win_streak"], active_sessions[user_tg_id]["longest_lose_streak"]
                 try:
                     await pred_msg.edit_text(
@@ -926,8 +910,8 @@ async def auto_bet_loop(user_tg_id, message: types.Message):
                                 else:
                                     await msg.edit_text(f"❌ <b>Virtual Loss:</b> {new_miss}/{hit_wait} ပွဲလွဲသွားပါပြီ။\nResult: {actual_result}")
                             asyncio.create_task(delete_message_later(msg, 5)) 
-                            last_betted_issue = current_issue
                         except Exception: pass
+                        last_betted_issue = current_issue
                         await asyncio.sleep(2)
                         continue 
 
@@ -1109,7 +1093,6 @@ async def process_custom_pattern(message: types.Message, state: FSMContext):
     if user_tg_id in active_sessions:
         active_sessions[user_tg_id]["custom_pattern"] = pattern_list
         active_sessions[user_tg_id]["custom_pattern_step"] = 0
-        active_sessions[user_tg_id]["custom_pattern_started"] = False  # Trigger ကို ထပ်မံစောင့်ရန် Reset
         active_sessions[user_tg_id]["ai_mode"] = "🛠️ Set Pattern"
 
     await db.update_user_ai_mode(user_tg_id, "🛠️ Set Pattern")
