@@ -279,11 +279,12 @@ def get_logged_in_keyboard():
     )
 
 def get_ai_mode_keyboard():
-    modes = list(AI_MODES.values())
+    """Standard AI Modes Keyboard (Pro Menu Button ပါဝင်သည်)"""
+    standard_modes = [m for k, m in AI_MODES.items() if not k.startswith("pro_")]
     keyboard = []
     row = []
     
-    for mode in modes:
+    for mode in standard_modes:
         mode_name = mode["name"]
         emoji_id = AI_MODE_EMOJIS.get(mode_name, "5868656545634689320")
         btn = KeyboardButton(text=mode_name, icon_custom_emoji_id=emoji_id, style="primary")
@@ -294,7 +295,29 @@ def get_ai_mode_keyboard():
     if row:
         keyboard.append(row)
     
+    pro_btn = KeyboardButton(text="👑 Pro AI Features", icon_custom_emoji_id="5807868868886009920", style="success")
     back_btn = KeyboardButton(text="BACK", icon_custom_emoji_id="5848119413041431362", style="primary")
+    keyboard.append([pro_btn])
+    keyboard.append([back_btn])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+def get_pro_ai_mode_keyboard():
+    """Pro AI Features သီးသန့် Sub-menu Keyboard"""
+    pro_modes = [m for k, m in AI_MODES.items() if k.startswith("pro_")]
+    keyboard = []
+    row = []
+    
+    for mode in pro_modes:
+        mode_name = mode["name"]
+        btn = KeyboardButton(text=mode_name, icon_custom_emoji_id="5807868868886009920", style="primary")
+        row.append(btn)
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+        
+    back_btn = KeyboardButton(text="🔙 AI Menu သို့ပြန်သွားရန်", icon_custom_emoji_id="5848119413041431362", style="danger")
     keyboard.append([back_btn])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -1242,6 +1265,24 @@ async def logout(message: types.Message, state: FSMContext):
         del active_sessions[user_tg_id]
     await state.clear()
     await message.answer("👋 အကောင့်ထွက်ပြီးပါပြီ။", reply_markup=get_main_keyboard())
+
+
+@dp.message(F.text == "👑 Pro AI Features")
+async def cmd_pro_ai_menu(message: types.Message):
+    if message.from_user.id not in active_sessions: return await message.answer("⚠️ Login ဝင်ပေးပါ။")
+    
+    text = (
+        "👑 <b>Pro AI Features (Advanced Machine Learning)</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "အောက်ပါ အဆင့်မြင့် AI/ML Algorithm များကို သင်စိတ်ကြိုက် ရွေးချယ်အသုံးပြုနိုင်ပါသည်။\n\n"
+        "<i>(မှတ်ချက် - ထွက်ပေါ်ခဲ့သော Pattern များကို သင်္ချာသီအိုရီများဖြင့် တွက်ချက်ထားခြင်းဖြစ်ပါသည်။)</i>"
+    )
+    await message.answer(text, reply_markup=get_pro_ai_mode_keyboard())
+
+@dp.message(F.text == "🔙 AI Menu သို့ပြန်သွားရန်")
+async def cmd_back_to_ai_menu(message: types.Message):
+    if message.from_user.id not in active_sessions: return await message.answer("⚠️ Login ဝင်ပေးပါ။")
+    await message.answer("🤖 <b>AI Mode ရွေးချယ်ရန်:</b>", reply_markup=get_ai_mode_keyboard())
 
 @dp.message(F.text == TEXT_GAMES)
 async def games(message: types.Message):
