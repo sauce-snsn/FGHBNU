@@ -821,7 +821,10 @@ async def prediction_broadcast_loop(user_tg_id, message: types.Message):
                 active_sessions[user_tg_id]["last_predicted_issue"] = current_issue
                 long_w, long_l = active_sessions[user_tg_id]["longest_win_streak"], active_sessions[user_tg_id]["longest_lose_streak"]
                 
-                pred_msg = await message.answer(
+                # --------------------------------------------------
+                # 🚀 (၁) ခန့်မှန်းချက်ကို အရင်ဆုံးထုတ်ပြီး Channel ကို ချက်ချင်း ကြိုပို့ထားမည်
+                # --------------------------------------------------
+                initial_pred_text = (
                     "<blockquote>"
                     f"{P_1} Ai Prediction - Live\n"
                     "━━━━━━━━━━━━━━━\n"
@@ -832,6 +835,21 @@ async def prediction_broadcast_loop(user_tg_id, message: types.Message):
                     "</blockquote>"
                 )
                 
+                # ပုံမှန် User ဆီကို ပို့ခြင်း
+                pred_msg = await message.answer(initial_pred_text)
+                
+                # Upload Channel ဖွင့်ထားပါက Channel ကိုပါ ခန့်မှန်းချက် ချက်ချင်း ကြိုပို့ခြင်း
+                channel_msg_id = None
+                if active_sessions[user_tg_id].get("upload_channel", False) and CHANNEL_ID:
+                    try:
+                        channel_msg = await bot.send_message(chat_id=CHANNEL_ID, text=initial_pred_text)
+                        channel_msg_id = channel_msg.message_id
+                    except Exception as e:
+                        print(f"Channel Send Error: {e}")
+
+                # --------------------------------------------------
+                # 🔄 Result ထွက်အောင် စောင့်ခြင်း
+                # --------------------------------------------------
                 actual_result = "? | ?"
                 for _ in range(20):
                     if not active_sessions.get(user_tg_id, {}).get("is_ai_prediction_enabled", False): break
@@ -854,6 +872,10 @@ async def prediction_broadcast_loop(user_tg_id, message: types.Message):
                     status_text = "⚖️ <b>DRAW (Timeout)</b>"
                   
                 long_w, long_l = active_sessions[user_tg_id]["longest_win_streak"], active_sessions[user_tg_id]["longest_lose_streak"]
+                
+                # --------------------------------------------------
+                # 🚀 (၂) ရလဒ်ထွက်လာတဲ့အခါ စာကို Edit သွားလုပ်ခြင်း
+                # --------------------------------------------------
                 try:
                     final_pred_text = (
                         "<blockquote>"
@@ -866,16 +888,15 @@ async def prediction_broadcast_loop(user_tg_id, message: types.Message):
                         "</blockquote>"
                     )
                     
+                    # User ဆီကစာကို Edit လုပ်ခြင်း
                     await pred_msg.edit_text(final_pred_text)
                     
-                    # --------------------------------------------------
-                    # 🚀 Upload Channel ON ထားရင် Channel ဆီ ပို့မည်
-                    # --------------------------------------------------
-                    if active_sessions[user_tg_id].get("upload_channel", False) and CHANNEL_ID:
+                    # Upload Channel ဖွင့်ထားပါက Channel မှာ ကြိုပို့ထားတဲ့စာကိုပါ အလိုအလျောက် Edit သွားလုပ်ခြင်း
+                    if channel_msg_id and active_sessions[user_tg_id].get("upload_channel", False) and CHANNEL_ID:
                         try:
-                            await bot.send_message(chat_id=CHANNEL_ID, text=final_pred_text)
+                            await bot.edit_message_text(chat_id=CHANNEL_ID, message_id=channel_msg_id, text=final_pred_text)
                         except Exception as e:
-                            print(f"Channel Send Error: {e}")
+                            print(f"Channel Edit Error: {e}")
                             
                 except: pass
                 await asyncio.sleep(2)
