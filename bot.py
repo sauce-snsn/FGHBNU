@@ -62,7 +62,6 @@ SITE_CONFIGS = {
 }
 
 def get_signed_payload(payload: dict) -> dict:
-    """Frontend ၏ Signature တွက်ချက်မှု Logic အတိအကျ"""
     t = {k: v for k, v in payload.items() if k not in ['signature', 'timestamp']}
     
     if 'language' not in t:
@@ -197,7 +196,7 @@ class AuthMiddleware(BaseMiddleware):
             if user_id == OWNER_ID:
                 return await handler(event, data)
                 
-            whitelisted = await db.db["whitelist"].find_one({"uid": str(user_id)})
+            whitelisted = await db.is_uid_allowed(str(user_id))
             if whitelisted:
                 return await handler(event, data)
                 
@@ -223,23 +222,6 @@ class AuthMiddleware(BaseMiddleware):
 
 dp.message.middleware(AuthMiddleware())
 dp.callback_query.middleware(AuthMiddleware())
-
-# ==========================================================
-# 🎡 AI Configuration
-# ==========================================================
-def circle_rnd_predict(history_docs):
-    wheel = ["BIG", "SMALL", "BIG", "SMALL", "BIG", "SMALL", "BIG", "SMALL"]
-    predicted = random.choice(wheel)
-    emoji = "🔴" if predicted == "BIG" else "🟢"
-    confidence = round(random.uniform(50.0, 65.0), 1)
-    name_str = "အကြီး" if predicted == "BIG" else "အသေး"
-    return predicted, f"{predicted} ({name_str}) {emoji}", confidence, "🎡 Circle Rnd: Spinner"
-
-ai_engines.AI_MODES["circle_rnd"] = {
-    "func": circle_rnd_predict,
-    "name": "🎡 Circle Rnd",
-    "desc": "Random Wheel Spin"
-}
 
 VALID_AI_NAMES = [m["name"] for m in ai_engines.AI_MODES.values()]
 
@@ -418,8 +400,8 @@ async def cmd_add_uid(message: types.Message):
         return await message.answer("⚠️ ဥပမာ: <code>.add 123456789</code>")
         
     target_id = parts[1].strip()
-    await db.db["whitelist"].update_one({"uid": target_id}, {"$set": {"uid": target_id}}, upsert=True)
-    await message.answer(f"✅ Telegram UID: <code>{target_id}</code> ကို Whitelist ထဲသို့ ထည့်သွင်းပြီးပါပြီ။\n(Key မလိုဘဲ သုံးနိုင်ပါသည်)")
+    await db.add_allowed_uid(target_id)
+    await message.answer(f"✅ Telegram UID: <code>{target_id}</code> ကို Whitelist ထဲသို့ ထည့်သွင်းပြီးပါပြီ။")
 
 @dp.message(F.text.startswith(".del "))
 async def cmd_del_uid(message: types.Message):
@@ -429,7 +411,7 @@ async def cmd_del_uid(message: types.Message):
         return await message.answer("⚠️ ဥပမာ: <code>.del 123456789</code>")
         
     target_id = parts[1].strip()
-    await db.db["whitelist"].delete_one({"uid": target_id})
+    await db.remove_allowed_uid(target_id)
     await message.answer(f"🗑️ Telegram UID: <code>{target_id}</code> ကို Whitelist မှ ပယ်ဖျက်လိုက်ပါပြီ။")
 
 @dp.message(lambda msg: msg.text and msg.text.startswith("PSP-") and len(msg.text) == 20)
@@ -594,7 +576,9 @@ async def process_password(message: types.Message, state: FSMContext):
                 "is_virtual_mode": False,
                 "virtual_balance": 0.0,
                 "virtual_session_profit": 0.0,
-                "upload_channel": False
+                "upload_channel": False,
+                "model_accuracies": {}, # 🚀 AI Accuracies Tracker
+                "last_prediction_value": None
             }
 
             caption_text = (
@@ -638,9 +622,7 @@ async def get_latest_game_result(target_issue, user_tg_id):
     config = SITE_CONFIGS.get(site)
     url = f"{config['api_url']}/GetNoaverageEmerdList"
     
-    payload = {
-        'pageSize': 10, 'pageNo': 1, 'typeId': 30, 'language': 7
-    }
+    payload = {'pageSize': 10, 'pageNo': 1, 'typeId': 30, 'language': 7}
     signed_payload = get_signed_payload(payload)
     headers = get_headers(site, token)
     
@@ -668,9 +650,7 @@ async def get_ai_prediction(user_tg_id):
     config = SITE_CONFIGS.get(site)
     url = f"{config['api_url']}/GetNoaverageEmerdList"
     
-    payload = {
-        'pageSize': 10, 'pageNo': 1, 'typeId': 30, 'language': 7
-    }
+    payload = {'pageSize': 10, 'pageNo': 1, 'typeId': 30, 'language': 7}
     signed_payload = get_signed_payload(payload)
     headers = get_headers(site, token)
 
@@ -692,7 +672,6 @@ async def get_ai_prediction(user_tg_id):
             
             user_ai_name = session_data.get("ai_mode", "🎯 Pattern AI")
             
-            # --- Custom Pattern အတွက် ထပ်တိုး Logic ---
             if user_ai_name == "Set Pattern":
                 pat = session_data.get("custom_pattern", ["BIG"])
                 step = session_data.get("custom_pattern_step", 0)
@@ -702,7 +681,6 @@ async def get_ai_prediction(user_tg_id):
                     last_actual_num = int(records[0]['number'])
                     last_actual_size = "BIG" if last_actual_num >= 5 else "SMALL"
                     trigger = "SMALL" if target_bet == "BIG" else "BIG"
-
                     if last_actual_size != trigger:
                         return "wait", 100, next_issue, user_ai_name
 
@@ -714,7 +692,15 @@ async def get_ai_prediction(user_tg_id):
                         mode_key = key
                         break
                         
-                predicted_size, display_name, confidence, desc = ai_engines.get_prediction(history_docs, mode_key)
+                model_accuracies = session_data.get("model_accuracies", {})
+                
+                predicted_size, display_name, confidence, desc = ai_engines.get_prediction(
+                    history_docs, mode_key, model_accuracies=model_accuracies
+                )
+                
+                if predicted_size.lower() == "wait":
+                    return "wait", confidence, next_issue, user_ai_name
+                    
                 return predicted_size.lower(), confidence, next_issue, user_ai_name
         else:
             return None, 0, None, None
@@ -780,6 +766,25 @@ async def place_auto_bet(user_tg_id: int, current_issue: str, bet_type: str, tot
         return False
 
 # ==========================================================
+# 🔄 Accuracy Tracking Updater Function (NEW)
+# ==========================================================
+def update_model_accuracies(user_tg_id, actual_result_size):
+    """ပွဲစဉ်ပြီးဆုံးသွားတိုင်း လက်ရှိ Model များ၏ မှန်ကန်မှုကို Update လုပ်ပေးခြင်း"""
+    if user_tg_id not in active_sessions: return
+    session = active_sessions[user_tg_id]
+    if "model_accuracies" not in session:
+        session["model_accuracies"] = {}
+        
+    active_ai = session.get("ai_mode")
+    last_pred = session.get("last_prediction_value") 
+    
+    if last_pred and actual_result_size and last_pred != "wait" and actual_result_size != "?":
+        is_win = (last_pred.lower() == actual_result_size.lower())
+        current_acc = session["model_accuracies"].get(active_ai, 0.5)
+        new_acc = (current_acc * 0.8) + (1.0 if is_win else 0.0) * 0.2
+        session["model_accuracies"][active_ai] = new_acc
+
+# ==========================================================
 # 🔮 AI Prediction Broadcast Loop
 # ==========================================================
 @dp.message(F.text == TEXT_PREDICT)
@@ -819,11 +824,9 @@ async def prediction_broadcast_loop(user_tg_id, message: types.Message):
 
             if current_issue and current_issue != last_issue:
                 active_sessions[user_tg_id]["last_predicted_issue"] = current_issue
+                active_sessions[user_tg_id]["last_prediction_value"] = predicted_bet
                 long_w, long_l = active_sessions[user_tg_id]["longest_win_streak"], active_sessions[user_tg_id]["longest_lose_streak"]
                 
-                # --------------------------------------------------
-                # 🚀 (၁) ခန့်မှန်းချက်ကို အရင်ဆုံးထုတ်ပြီး Channel ကို ချက်ချင်း ကြိုပို့ထားမည်
-                # --------------------------------------------------
                 initial_pred_text = (
                     "<blockquote>"
                     f"{P_1} Ai Prediction - Live\n"
@@ -835,21 +838,16 @@ async def prediction_broadcast_loop(user_tg_id, message: types.Message):
                     "</blockquote>"
                 )
                 
-                # ပုံမှန် User ဆီကို ပို့ခြင်း
                 pred_msg = await message.answer(initial_pred_text)
                 
-                # Upload Channel ဖွင့်ထားပါက Channel ကိုပါ ခန့်မှန်းချက် ချက်ချင်း ကြိုပို့ခြင်း
                 channel_msg_id = None
                 if active_sessions[user_tg_id].get("upload_channel", False) and CHANNEL_ID:
                     try:
                         channel_msg = await bot.send_message(chat_id=CHANNEL_ID, text=initial_pred_text)
                         channel_msg_id = channel_msg.message_id
                     except Exception as e:
-                        print(f"Channel Send Error: {e}")
+                        pass
 
-                # --------------------------------------------------
-                # 🔄 Result ထွက်အောင် စောင့်ခြင်း
-                # --------------------------------------------------
                 actual_result = "? | ?"
                 for _ in range(20):
                     if not active_sessions.get(user_tg_id, {}).get("is_ai_prediction_enabled", False): break
@@ -858,7 +856,11 @@ async def prediction_broadcast_loop(user_tg_id, message: types.Message):
                     if actual_result != "? | ?": break
                 
                 if actual_result != "? | ?":
-                    if predicted_bet.lower() == actual_result.split(" | ")[1].strip().lower():
+                    actual_size = actual_result.split(" | ")[1].strip().lower()
+                    
+                    update_model_accuracies(user_tg_id, actual_size)
+                    
+                    if predicted_bet.lower() == actual_size:
                         status_text = f"{P_5}WIN{actual_result}"
                         active_sessions[user_tg_id]["current_win_streak"] += 1
                         active_sessions[user_tg_id]["current_lose_streak"] = 0
@@ -873,9 +875,6 @@ async def prediction_broadcast_loop(user_tg_id, message: types.Message):
                   
                 long_w, long_l = active_sessions[user_tg_id]["longest_win_streak"], active_sessions[user_tg_id]["longest_lose_streak"]
                 
-                # --------------------------------------------------
-                # 🚀 (၂) ရလဒ်ထွက်လာတဲ့အခါ စာကို Edit သွားလုပ်ခြင်း
-                # --------------------------------------------------
                 try:
                     final_pred_text = (
                         "<blockquote>"
@@ -888,15 +887,13 @@ async def prediction_broadcast_loop(user_tg_id, message: types.Message):
                         "</blockquote>"
                     )
                     
-                    # User ဆီကစာကို Edit လုပ်ခြင်း
                     await pred_msg.edit_text(final_pred_text)
                     
-                    # Upload Channel ဖွင့်ထားပါက Channel မှာ ကြိုပို့ထားတဲ့စာကိုပါ အလိုအလျောက် Edit သွားလုပ်ခြင်း
                     if channel_msg_id and active_sessions[user_tg_id].get("upload_channel", False) and CHANNEL_ID:
                         try:
                             await bot.edit_message_text(chat_id=CHANNEL_ID, message_id=channel_msg_id, text=final_pred_text)
                         except Exception as e:
-                            print(f"Channel Edit Error: {e}")
+                            pass
                             
                 except: pass
                 await asyncio.sleep(2)
@@ -947,7 +944,7 @@ async def auto_bet_loop(user_tg_id, message: types.Message):
                              "<blockquote>"
                              f"{E_DOC} <b>Pattern Trigger စောင့်ကြည့်နေပါသည်...</b>\n"
                              f"{E_DOC} WINGO_30S : <code>{current_issue}</code>\n"
-                             f"{E_FLOWER} Status : ဆန့်ကျင်ဘက်ရလဒ် ထွက်ရန်စောင့်ဆိုင်းနေပါသည်"
+                             f"{E_FLOWER} Status : မသေချာသဖြင့် နောက်တစ်ပွဲကို စောင့်ဆိုင်းနေပါသည်"
                              "</blockquote>"
                         )
                         last_betted_issue = current_issue
@@ -976,6 +973,8 @@ async def auto_bet_loop(user_tg_id, message: types.Message):
                                 
                         try:
                             actual_size = actual_result.split(" | ")[1].strip().lower()
+                            update_model_accuracies(user_tg_id, actual_size) # 🚀 Update Model Accuracy 
+                            
                             if predicted_bet.lower() == actual_size:
                                 active_sessions[user_tg_id]["current_misses"] = 0 
                                 await msg.edit_text(f"🔄 <b>Hit Reset:</b> AI အမှန်ခန့်မှန်းသွားသဖြင့် အစမှပြန်စောင့်ပါမည်။\nResult: {actual_result}")
@@ -1016,6 +1015,7 @@ async def auto_bet_loop(user_tg_id, message: types.Message):
                         active_sessions[user_tg_id]["is_auto_betting"] = False
                         break
 
+                    active_sessions[user_tg_id]["last_prediction_value"] = predicted_bet
                     await message.answer(
                         "<blockquote>"
                         f"{E_DOC} WINGO_30S : <code>{current_issue}</code>\n"
@@ -1076,6 +1076,7 @@ async def auto_bet_loop(user_tg_id, message: types.Message):
 
                     try:
                         actual_size = actual_result.split(" | ")[1].strip().lower() 
+                        update_model_accuracies(user_tg_id, actual_size) # 🚀 Update Model Accuracy
                         
                         if predicted_bet.lower() == actual_size:
                             profit_amount = current_amount * 0.96
@@ -1419,7 +1420,7 @@ async def games(message: types.Message):
     await message.answer("🎮 <b>Game ရွေးချယ်ရန်:</b>\nWin Go 30s ကို ရွေးချယ်ထားပါသည်။", reply_markup=get_main_keyboard())
 
 # ==========================================================
-# 🧪 Virtual Mode Handlers (NEW)
+# 🧪 Virtual Mode Handlers
 # ==========================================================
 @dp.message(F.text == TEXT_VIRTUAL_MODE)
 async def cmd_virtual_mode(message: types.Message, state: FSMContext):
