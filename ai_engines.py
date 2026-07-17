@@ -1008,6 +1008,18 @@ def pro_max_predict(history_docs):
         pro_entropy_predict,
         pro_streak_momentum_predict,
         pro_real_ml_predict,
+        ml_style_predict,
+        markov_chain_predict,
+        bayesian_predict,
+        chaos_theory_predict,
+        wave_analysis_predict,
+        quick_reversal_predict,
+        neural_pattern_predict,
+        monte_carlo_predict,
+        momentum_predict,
+        golden_ratio_predict,
+        fibonacci_predict,
+        trend_following_predict,
         babathapai_predict
     ]
 
