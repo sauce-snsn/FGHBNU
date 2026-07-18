@@ -462,12 +462,12 @@ async def process_key_redemption(message: types.Message):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("An ဝင်ရန် Login ကိုနှိပ်ပါ", reply_markup=get_main_keyboard())
+    await message.answer("ᴄʟɪᴄᴋ ʟᴏɢɪɴ.", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == TEXT_LOGIN)
 async def login_start(message: types.Message, state: FSMContext):
     await state.set_state(LoginForm.select_site)
-    await message.answer("Site ရွေးပါ", reply_markup=get_site_keyboard())
+    await message.answer("ꜱᴇʟᴇᴄᴛ ᴀ ɢᴀᴍᴇ ꜱɪᴛᴇ", reply_markup=get_site_keyboard())
 
 @dp.message(LoginForm.select_site)
 async def process_site(message: types.Message, state: FSMContext):
@@ -503,7 +503,7 @@ async def process_password(message: types.Message, state: FSMContext):
     site_name = data.get('site', '777BIGWIN')
     user_tg_id = message.from_user.id
     
-    loading_msg = await message.answer("🔄 Login...")
+    loading_msg = await message.answer(" Login...")
 
     try:
         config = SITE_CONFIGS.get(site_name)
